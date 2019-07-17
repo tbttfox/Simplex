@@ -31,6 +31,38 @@ using std::min;
 using std::max;
 
 
+#define CHECK_JSON_STRING(itName, memName, jsVal) \
+	auto itName = (jsVal).FindMember(memName);\
+	if (itName == (jsVal).MemberEnd()) return false;\
+	if (!itName->value.IsString()) return false;
+
+#define CHECK_JSON_INT(itName, memName, jsVal) \
+	auto itName = (jsVal).FindMember(memName);\
+	if (itName == (jsVal).MemberEnd()) return false;\
+	if (!itName->value.IsInt()) return false;
+
+#define CHECK_JSON_BOOL(itName, memName, jsVal) \
+	auto itName = (jsVal).FindMember(memName);\
+	if (itName == (jsVal).MemberEnd()) return false;\
+	if (!itName->value.IsBool()) return false;
+
+#define CHECK_JSON_ARRAY(itName, memName, jsVal) \
+	auto itName = (jsVal).FindMember("pairs");\
+	if (itName == (jsVal).MemberEnd()) return false;\
+	if (!itName->value.IsArray()) return false;
+
+inline bool checkJsonEnabled(const rapidjson::Value &jsVal){
+	auto enIt = jsVal.FindMember("enabled");
+	if (enIt != jsVal.MemberEnd()){
+	    if (enIt->value.IsBool()){
+			return enIt->value.GetBool();
+	    }
+	}
+	return true;
+}
+
+
+
 double doSoftMin(double X, double Y) {
 	if (isZero(X) || isZero(Y)) return 0.0;
 	if (X < Y) std::swap(X, Y);
@@ -59,15 +91,16 @@ bool Shape::parseJSONv1(const rapidjson::Value &val, size_t index, Simplex *simp
 bool Shape::parseJSONv2(const rapidjson::Value &val, size_t index, Simplex *simp){
 	if (!val.IsObject()) return false;
 
-	auto nameIt = val.FindMember("name");
-	if (nameIt == val.MemberEnd()) return false;
-	if (!nameIt->value.IsString()) return false;
+	CHECK_JSON_STRING(nameIt, "name", val)
 
 	string name(nameIt->value.GetString());
 	simp->shapes.push_back(Shape(name, index));
 	return true;
 }
 
+bool Shape::parseJSONv3(const rapidjson::Value &val, size_t index, Simplex *simp){
+	return parseJSONv2(val, index, simp);
+}
 
 
 /* * CLASS PROGRESSION * */
@@ -246,17 +279,9 @@ bool Progression::parseJSONv1(const rapidjson::Value &val, size_t index, Simplex
 bool Progression::parseJSONv2(const rapidjson::Value &val, size_t index, Simplex *simp){
 	if (!val.IsObject()) return false;
 
-	auto nameIt = val.FindMember("name");
-	if (nameIt == val.MemberEnd()) return false;
-	if (!nameIt->value.IsString()) return false;
-
-	auto pairsIt = val.FindMember("pairs");
-	if (pairsIt == val.MemberEnd()) return false;
-	if (!pairsIt->value.IsArray()) return false;
-
-	auto interpIt = val.FindMember("interp");
-	if (interpIt == val.MemberEnd()) return false;
-	if (!interpIt->value.IsString()) return false;
+	CHECK_JSON_STRING(nameIt, "name", val);
+	CHECK_JSON_ARRAY(pairsIt, "pairs", val);
+	CHECK_JSON_STRING(interpIt, "interp", val);
 
 	string name(nameIt->value.GetString());
 
@@ -286,6 +311,10 @@ bool Progression::parseJSONv2(const rapidjson::Value &val, size_t index, Simplex
 	return true;
 }
 
+bool Progression::parseJSONv3(const rapidjson::Value &val, size_t index, Simplex *simp){
+	return parseJSONv2(val, index, simp);
+}
+
 /* * CLASS SHAPE CONTROLLER * */
 void ShapeController::solve(std::vector<double> &accumulator, double &maxAct) const {
 	double vm = fabs(value * multiplier);
@@ -293,9 +322,7 @@ void ShapeController::solve(std::vector<double> &accumulator, double &maxAct) co
 
 	vector<pair<Shape*, double> > shapeVals = prog->getOutput(value, multiplier);
 	for (auto sit=shapeVals.begin(); sit!=shapeVals.end(); ++sit){
-		//for (const auto &svp: shapeVals){
-		const auto &svp = *sit;
-		accumulator[svp.first->getIndex()] += svp.second;
+		accumulator[sit->first->getIndex()] += sit->second;
 	}
 }
 
@@ -316,32 +343,23 @@ bool Slider::parseJSONv1(const rapidjson::Value &val, size_t index, Simplex *sim
 bool Slider::parseJSONv2(const rapidjson::Value &val, size_t index, Simplex *simp){
 	if (!val.IsObject()) return false;
 
-	auto nameIt = val.FindMember("name");
-	if (nameIt == val.MemberEnd()) return false;
-	if (!nameIt->value.IsString()) return false;
-
-	auto progIt = val.FindMember("prog");
-	if (progIt == val.MemberEnd()) return false;
-	if (!progIt->value.IsInt()) return false;
+	CHECK_JSON_STRING(nameIt, "name", val);
+	CHECK_JSON_INT(progIt, "prog", val);
 
 	string name(nameIt->value.GetString());
 	size_t slidx = size_t(progIt->value.GetInt());
+	bool enabled = checkJsonEnabled(val);
 	
 	if (slidx >= simp->progs.size()) return false;
-
-	bool enabled = true;
-	auto enIt = val.FindMember("enabled");
-	if (enIt != val.MemberEnd()){
-	    if (enIt->value.IsBool()){
-			enabled = enIt->value.GetBool();
-	    }
-	}
 
 	simp->sliders.push_back(Slider(name, &simp->progs[slidx], index));
 	simp->sliders.back().setEnabled(enabled);
 	return true;
 }
 
+bool Slider::parseJSONv3(const rapidjson::Value &val, size_t index, Simplex *simp){
+	return parseJSONv2(val, index, simp);
+}
 
 /* * CLASS COMBO * */
 void Combo::storeValue(
@@ -441,18 +459,12 @@ bool Combo::parseJSONv1(const rapidjson::Value &val, size_t index, Simplex *simp
 bool Combo::parseJSONv2(const rapidjson::Value &val, size_t index, Simplex *simp){
 	if (!val.IsObject()) return false;
 
-	auto nameIt = val.FindMember("name");
-	if (nameIt == val.MemberEnd()) return false;
-	if (!nameIt->value.IsString()) return false;
+	CHECK_JSON_STRING(nameIt, "name", val);
+	CHECK_JSON_INT(progIt, "prog", val);
+	CHECK_JSON_ARRAY(pairsIt, "pairs", val);
 
-	auto progIt = val.FindMember("prog");
-	if (progIt == val.MemberEnd()) return false;
-	if (!progIt->value.IsInt()) return false;
-
-	auto pairsIt = val.FindMember("pairs");
-	if (pairsIt == val.MemberEnd()) return false;
-	if (!pairsIt->value.IsArray()) return false;
 	string name(nameIt->value.GetString());
+	bool enabled = checkJsonEnabled(val);
 
 	ComboSolve solveType = ComboSolve::None;
 	auto solveIt = val.FindMember("solveType");
@@ -499,14 +511,6 @@ bool Combo::parseJSONv2(const rapidjson::Value &val, size_t index, Simplex *simp
 	size_t pidx = (size_t)progIt->value.GetInt();
 	if (pidx >= simp->progs.size()) return false;
 
-	bool enabled = true;
-	auto enIt = val.FindMember("enabled");
-	if (enIt != val.MemberEnd()){
-	    if (enIt->value.IsBool()){
-		enabled = enIt->value.GetBool();
-	    }
-	}
-
 	if (isFloater){
 	    simp->floaters.push_back(Floater(name, &simp->progs[pidx], index, state, isFloater));
 		simp->floaters.back().setEnabled(enabled);
@@ -518,6 +522,11 @@ bool Combo::parseJSONv2(const rapidjson::Value &val, size_t index, Simplex *simp
 	simp->combos.back().setEnabled(enabled);
 	return true;
 }
+
+bool Combo::parseJSONv3(const rapidjson::Value &val, size_t index, Simplex *simp){
+	return parseJSONv2(val, index, simp);
+}
+
 
 
 /* * CLASS TRAVERSAL * */
@@ -549,37 +558,14 @@ bool Traversal::parseJSONv1(const rapidjson::Value &val, size_t index, Simplex *
 bool Traversal::parseJSONv2(const rapidjson::Value &val, size_t index, Simplex *simp){
 	if (!val.IsObject()) return false;
 
-	auto nameIt = val.FindMember("name");
-	if (nameIt == val.MemberEnd()) return false;
-	if (!nameIt->value.IsString()) return false;
-
-	auto progIt = val.FindMember("prog");
-	if (progIt == val.MemberEnd()) return false;
-	if (!progIt->value.IsInt()) return false;
-
-	auto ptIt = val.FindMember("progressType");
-	if (ptIt == val.MemberEnd()) return false;
-	if (!ptIt->value.IsString()) return false;
-
-	auto pcIt = val.FindMember("progressControl");
-	if (pcIt == val.MemberEnd()) return false;
-	if (!pcIt->value.IsInt()) return false;
-
-	auto pfIt = val.FindMember("progressFlip");
-	if (pfIt == val.MemberEnd()) return false;
-	if (!pfIt->value.IsBool()) return false;
-
-	auto mtIt = val.FindMember("multiplierType");
-	if (mtIt == val.MemberEnd()) return false;
-	if (!mtIt->value.IsString()) return false;
-
-	auto mcIt = val.FindMember("multiplierControl");
-	if (mcIt == val.MemberEnd()) return false;
-	if (!mcIt->value.IsInt()) return false;
-
-	auto mfIt = val.FindMember("multiplierFlip");
-	if (mfIt == val.MemberEnd()) return false;
-	if (!mfIt->value.IsBool()) return false;
+	CHECK_JSON_STRING(nameIt, "name", val);
+	CHECK_JSON_INT(progIt, "prog", val);
+	CHECK_JSON_STRING(ptIt, "progressType", val);
+	CHECK_JSON_INT(pcIt, "progressControl", val);
+	CHECK_JSON_BOOL(pfIt, "progressFlip", val);
+	CHECK_JSON_STRING(mtIt, "multiplierType", val);
+	CHECK_JSON_INT(mcIt, "multiplierControl", val);
+	CHECK_JSON_BOOL(mfIt, "multiplierFlip", val);
 
 	string name(nameIt->value.GetString());
 	size_t pidx = (size_t)progIt->value.GetInt();
@@ -589,6 +575,7 @@ bool Traversal::parseJSONv2(const rapidjson::Value &val, size_t index, Simplex *
 	size_t mcidx = (size_t)mcIt->value.GetInt();
 	bool pcFlip = pfIt->value.GetBool();
 	bool mcFlip = mfIt->value.GetBool();
+	bool enabled = checkJsonEnabled(val);
 
 	ShapeController *pcItem;
 	if (!pctype.empty() && pctype[0] == 'S') {
@@ -617,15 +604,83 @@ bool Traversal::parseJSONv2(const rapidjson::Value &val, size_t index, Simplex *
 	if (pidx >= simp->progs.size())
 		return false;
 
-	bool enabled = true;
-	auto enIt = val.FindMember("enabled");
-	if (enIt != val.MemberEnd()){
-	    if (enIt->value.IsBool()){
-			enabled = enIt->value.GetBool();
-	    }
-	}
-	
+
 	simp->traversals.push_back(Traversal(name, &simp->progs[pidx], index, pcItem, mcItem, pcFlip, mcFlip));
+	simp->traversals.back().setEnabled(enabled);
+	return true;
+}
+
+bool Traversal::parseJSONv3(const rapidjson::Value &val, size_t index, Simplex *simp){
+	if (!val.IsObject()) return false;
+
+	CHECK_JSON_STRING(nameIt, "name", val);
+	CHECK_JSON_INT(progIt, "prog", val);
+	CHECK_JSON_ARRAY(startIt, "start", val);
+	CHECK_JSON_ARRAY(endIt, "end", val);
+
+	string name(nameIt->value.GetString());
+	size_t pidx = (size_t)progIt->value.GetInt();
+	bool enabled = checkJsonEnabled(val);
+
+	if (pidx >= simp->progs.size())
+		return false;
+
+	ComboSolve solveType = ComboSolve::None;
+	auto solveIt = val.FindMember("solveType");
+	if (solveIt != val.MemberEnd()) {
+		if (!solveIt->value.IsString()) {
+			solveType = ComboSolve::None;
+		}
+		else {
+			string solve(solveIt->value.GetString());
+			if (solve == "min")
+				solveType = ComboSolve::min;
+			else if (solve == "allMul")
+				solveType = ComboSolve::allMul;
+			else if (solve == "extMul")
+				solveType = ComboSolve::extMul;
+			else if (solve == "mulAvgExt")
+				solveType = ComboSolve::mulAvgExt;
+			else if (solve == "mulAvgAll")
+				solveType = ComboSolve::mulAvgAll;
+			else if (solve == "None")
+				solveType = ComboSolve::None;
+			else
+				solveType = ComboSolve::None;
+		}
+	}
+
+	vector<pair<Slider*, double> > startState;
+	auto &startVal = startIt->value;
+	for (auto it = startVal.Begin(); it != startVal.End(); ++it){
+		auto &ival = *it;
+		if (!ival.IsArray()) return false;
+		if (!ival[0].IsInt()) return false;
+		if (!ival[1].IsDouble()) return false;
+
+		size_t slidx = (size_t)ival[0].GetInt();
+		double slval = (double)ival[1].GetDouble();
+		if (!floatEQ(fabs(slval), 1.0, EPS) && !isZero(slval)) return false;
+		if (slidx >= simp->sliders.size()) return false;
+		startState.push_back(make_pair(&simp->sliders[slidx], slval));
+	}
+
+	vector<pair<Slider*, double> > endState;
+	auto &endVal = endIt->value;
+	for (auto it = endVal.Begin(); it != endVal.End(); ++it){
+		auto &ival = *it;
+		if (!ival.IsArray()) return false;
+		if (!ival[0].IsInt()) return false;
+		if (!ival[1].IsDouble()) return false;
+
+		size_t slidx = (size_t)ival[0].GetInt();
+		double slval = (double)ival[1].GetDouble();
+		if (!floatEQ(fabs(slval), 1.0, EPS) && !isZero(slval)) return false;
+		if (slidx >= simp->sliders.size()) return false;
+		endState.push_back(make_pair(&simp->sliders[slidx], slval));
+	}
+
+	simp->traversals.push_back(Traversal(name, &simp->progs[pidx], index, startState, endState, solveType));
 	simp->traversals.back().setEnabled(enabled);
 	return true;
 }
@@ -736,7 +791,9 @@ bool Simplex::parseJSONversion(const rapidjson::Document &d, unsigned version){
 	rapidjson::SizeType i;
 	bool ret;
 	for (i = 0; i<jshapes.Size(); ++i){
-		if (version == 2)
+		if (version == 3)
+			ret = Shape::parseJSONv3(jshapes[i], (size_t)i, this);
+		else if (version == 2)
 			ret = Shape::parseJSONv2(jshapes[i], (size_t)i, this);
 		else
 			ret = Shape::parseJSONv1(jshapes[i], (size_t)i, this);
@@ -745,7 +802,9 @@ bool Simplex::parseJSONversion(const rapidjson::Document &d, unsigned version){
 	}
 
 	for (i = 0; i<jprogs.Size(); ++i){
-		if (version == 2)
+		if (version == 3)
+			ret = Progression::parseJSONv3(jprogs[i], (size_t)i, this);
+		else if (version == 2)
 			ret = Progression::parseJSONv2(jprogs[i], (size_t)i, this);
 		else
 			ret = Progression::parseJSONv1(jprogs[i], (size_t)i, this);
@@ -754,7 +813,9 @@ bool Simplex::parseJSONversion(const rapidjson::Document &d, unsigned version){
 	}
 
 	for (i = 0; i<jsliders.Size(); ++i){
-		if (version == 2)
+		if (version == 3)
+			ret = Slider::parseJSONv3(jsliders[i], (size_t)i, this);
+		else if (version == 2)
 			ret = Slider::parseJSONv2(jsliders[i], (size_t)i, this);
 		else
 			ret = Slider::parseJSONv1(jsliders[i], (size_t)i, this);
@@ -766,7 +827,9 @@ bool Simplex::parseJSONversion(const rapidjson::Document &d, unsigned version){
 		const rapidjson::Value &jcombos = d["combos"];
 		if (!jcombos.IsArray()) return false;
 		for (i = 0; i<jcombos.Size(); ++i){
-			if (version == 2)
+			if (version == 3)
+				ret = Combo::parseJSONv3(jcombos[i], (size_t)i, this);
+			else if (version == 2)
 				ret = Combo::parseJSONv2(jcombos[i], (size_t)i, this);
 			else
 				ret = Combo::parseJSONv1(jcombos[i], (size_t)i, this);
@@ -779,7 +842,9 @@ bool Simplex::parseJSONversion(const rapidjson::Document &d, unsigned version){
 		const rapidjson::Value &jtravs = d["traversals"];
 		if (!jtravs.IsArray()) return false;
 		for (i = 0; i<jtravs.Size(); ++i){
-			if (version == 2)
+			if (version == 3)
+				ret = Traversal::parseJSONv3(jtravs[i], (size_t)i, this);
+			else if (version == 2)
 				ret = Traversal::parseJSONv2(jtravs[i], (size_t)i, this);
 			else
 				ret = Traversal::parseJSONv1(jtravs[i], (size_t)i, this);
