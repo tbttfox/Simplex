@@ -354,8 +354,8 @@ class FalloffDialog(QDialog):
         self._falloffMapper.setModel(self.foModel)
 
         print("Adding Mappings")
-        self._falloffMapper.addMapping(self.uiFalloffTypeCBOX, 1, "currentIndex")
-        self._falloffMapper.addMapping(self.uiFalloffAxisCBOX, 2, "currentIndex")
+        self._falloffMapper.addMapping(self.uiFalloffTypeCBOX, 1)
+        self._falloffMapper.addMapping(self.uiFalloffAxisCBOX, 2)
         self._falloffMapper.addMapping(self.uiFalloffMinSPN, 3)
         self._falloffMapper.addMapping(self.uiFalloffMinHandleSPN, 4)
         self._falloffMapper.addMapping(self.uiFalloffMaxHandleSPN, 5)

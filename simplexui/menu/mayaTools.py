@@ -20,6 +20,7 @@ from __future__ import absolute_import
 from . import mayaPlugins as plugins
 from . import genericPlugins
 from ..Qt.QtWidgets import QMenu
+import importlib
 
 # Registration class
 def loadPlugins():
@@ -27,7 +28,8 @@ def loadPlugins():
     contextModules = []
     for plugger in [genericPlugins, plugins]:
         for mp in plugger.__all__:
-            module = plugger.__dict__[mp]
+            pkg = plugger.__dict__['__package__']
+            module = importlib.import_module(mp, package=pkg)
             if hasattr(module, "registerTool"):
                 toolModules.append(module)
             if hasattr(module, "registerContext"):

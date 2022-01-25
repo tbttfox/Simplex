@@ -147,7 +147,7 @@ def mk1dArray(aType, iList):
     if np is None or arrayToNumpy is None or aType is UnsignedIntArray:
         array = aType(len(iList))
         for i in range(len(iList)):
-            array[i] = iList[i]
+            array[i] = int(iList[i])
         return array
     else:
         iList = np.array(iList)
@@ -314,7 +314,8 @@ def getSampleArray(imesh, pBar=None):
             pbPrint(pBar, message="Reading Shape", val=i, maxVal=numShapes)
             shapes.append((list(s.x), list(s.y), list(s.z)))
         shapes = np.array(shapes)
-        shapes = shapes.reshape((shapes.shape[0], -1, 3))
+        # shapes = shapes.reshape((shapes.shape[0], -1, 3))
+        shapes = shapes.transpose((0,2,1))
     else:
         shapes = []
         for i, s in enumerate(posProp.samples):
@@ -949,7 +950,7 @@ def buildSmpx(
     )
 
 
-def buildAlembicArchiveData(path, name, jsString, ogawa):
+def buildAlembicArchiveData(path, name, jsString, ogawa=True):
     """ Set up an output alembic archive with a mesh ready for writing
 
     Parameters
@@ -976,7 +977,7 @@ def buildAlembicArchiveData(path, name, jsString, ogawa):
     try:
         par = OXform(arch.getTop(), str(name))
         props = par.getSchema().getUserProperties()
-        writeStringProperty(props, "simplex", jsString, ogawa=ogawa)
+        writeStringProperty(props, "simplex", jsString, ogawa)
         abcMesh = OPolyMesh(par, str(name))
     except Exception:
         arch, par, props, abcMesh = [None] * 4
