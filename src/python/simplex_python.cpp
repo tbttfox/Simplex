@@ -18,7 +18,14 @@ PySimplex_dealloc(PySimplex* self) {
     Py_XDECREF(self->definition);
     if (self->sPointer != NULL)
 		delete self->sPointer;
-    Py_TYPE(self)->tp_free((PyObject*)self);
+    //Py_TYPE(self)->tp_free((PyObject*)self);
+    //void* freeFunc = PyType_GetSlot(self, Py_tp_free);
+
+    // This *should* get the slot containing tp_free from the type on self
+    // and cast that to a function taking a pyobject*, which we pass a cast
+    // "self" to... Yuck
+    ((void(*)(PyObject*))PyType_GetSlot(self, Py_tp_free))((PyObject*)self);
+
 }
 
 static PyObject *
