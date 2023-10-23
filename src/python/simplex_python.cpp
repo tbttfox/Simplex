@@ -18,13 +18,13 @@ PySimplex_dealloc(PySimplex* self) {
     Py_XDECREF(self->definition);
     if (self->sPointer != NULL)
 		delete self->sPointer;
-    Py_TYPE(self)->tp_free((PyObject*)self);
+    PyObject_Del(self);
 }
 
 static PyObject *
 PySimplex_new(PyTypeObject *type, PyObject *args, PyObject *kwds) {
-    PySimplex *self;
-    self = (PySimplex *)type->tp_alloc(type, 0);
+
+    PySimplex *self = PyObject_New(PySimplex, type);
     if (self != NULL) {
         self->definition = PyUnicode_FromString("");
         if (self->definition == NULL) {
@@ -118,7 +118,7 @@ PySimplex_solve(PySimplex* self, PyObject* vec){
     PyObject *item;
     std::vector<double> stdVec, outVec;
     for (Py_ssize_t i=0; i<PySequence_Size(vec); ++i){
-        item = PySequence_ITEM(vec, i);
+        item = PySequence_GetItem(vec, i);
         if (! PyNumber_Check(item)) {
             PyErr_SetString(PyExc_TypeError, "Input list can contain only numbers");
             return NULL;
@@ -132,11 +132,10 @@ PySimplex_solve(PySimplex* self, PyObject* vec){
 
     PyObject *out = PyList_New(outVec.size());
     for (size_t i=0; i<outVec.size(); ++i){
-        PyList_SET_ITEM(out, i, PyFloat_FromDouble(outVec[i]));
+        PyList_SetItem(out, i, PyFloat_FromDouble(outVec[i]));
     }
     return out;
 }
-
 
 static PyGetSetDef PySimplex_getseters[] = {
     {(char*)"definition",
@@ -203,8 +202,6 @@ static PyTypeObject PySimplexType = {
 static PyMethodDef module_methods[] = {
     {NULL}  /* Sentinel */
 };
-
-
 
 static PyObject * localInit(void)
 {
