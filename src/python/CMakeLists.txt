@@ -91,10 +91,6 @@ elseif(${PY_MAJOR} STREQUAL "3")
 endif()
 
 # Link to python
-target_compile_definitions(${PY_NAME}
-  PRIVATE
-    Py_LIMITED_API
-  )
 target_link_libraries(${PY_NAME}
     PRIVATE
         ${PY_MODULE}
