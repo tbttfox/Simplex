@@ -159,10 +159,7 @@ static PyMethodDef PySimplex_methods[] = {
 static PyTypeObject PySimplexType = {
     .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = "pysimplex.PySimplex",
-    .tp_doc = "PySimplex objects",
-    .tp_basicsize = sizeof(PySimplex),
-    .tp_dealloc = (destructor)PySimplex_dealloc,
-    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+    .tp_doc = PyDoc_STR("PySimplex objects"),
     .tp_methods = PySimplex_methods,
     .tp_getset = PySimplex_getseters,
     .tp_init = (initproc)PySimplex_init,
@@ -181,14 +178,23 @@ static PyObject * localInit(void)
 {
     PyObject* m;
 
+    // C++ doesn't like the tp flags out of order
+    // so I've gotta set some of 'em here
+    PySimplexType.tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE;
+    PySimplexType.tp_basicsize = sizeof(PySimplex);
+    PySimplexType.tp_dealloc = (destructor)PySimplex_dealloc;
+
     if (PyType_Ready(&PySimplexType) < 0)
         return NULL;
+
     m = PyModule_Create(&PySimplexModuleDef);
 
     if (m == NULL)
         return NULL;
 
-    if (PyModule_AddObjectRef(m, "PySimplex", (PyObject *)&PySimplexType) < 0) {
+    Py_INCREF(&PySimplexType);
+    if (PyModule_AddObject(m, "PySimplex", (PyObject *) &PySimplexType) < 0) {
+        Py_DECREF(&PySimplexType);
         Py_DECREF(m);
         return NULL;
     }
