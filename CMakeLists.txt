@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.26)
 
 project(simplex VERSION 1.0 DESCRIPTION "Blur Studio's Simplex Blendshape Combination System" LANGUAGES CXX)
 
