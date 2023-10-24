@@ -156,6 +156,77 @@ static PyMethodDef PySimplex_methods[] = {
 
 
 
+static PyType_Slot PySimplexType_Slots[] = {
+    {Py_tp_methods, PySimplex_methods},
+    {Py_tp_getset, PySimplex_getseters},
+    {Py_tp_init, (initproc)PySimplex_init},
+    {Py_tp_new, PySimplex_new},
+    {Py_tp_dealloc, (destructor)PySimplex_dealloc},
+    {0, 0},  // Sentinel
+};
+
+static PyType_Spec PySimplexType_Spec = {
+    .name = "pysimplex.PySimplex",
+    .basicsize = sizeof(PySimplex),
+    .flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+    .slots = PySimplexType_Slots,
+};
+
+
+
+static int PySimplexModule_exec(PyObject* module) {
+    PyObject* pysimplex_type;
+
+    pysimplex_type = PyType_FromSpec(&PySimplexType_Spec);
+    if (!pysimplex_type) {
+        Py_XDECREF(pysimplex_type);
+        Py_XDECREF(module);
+        return -1;
+    }
+
+    if (PyModule_AddObject(module, "PySimplex", pysimplex_type)) {
+        Py_XDECREF(pysimplex_type);
+        Py_XDECREF(module);
+        return -1;
+    }
+
+    return 0;
+}
+
+
+static PyModuleDef_Slot PySimplexModule_Slots[] = {
+    {Py_mod_exec, PySimplexModule_exec},
+    {0, NULL},
+};
+
+
+static PyModuleDef PySimplexModuleDef = {
+    .m_base = PyModuleDef_HEAD_INIT,
+    .m_name = "pysimplex",
+    .m_doc = "The Simplex blendshape solver in Python",
+    .m_size = 0,
+    .m_methods = NULL,
+    .m_slots = PySimplexModule_Slots,
+};
+
+
+PyMODINIT_FUNC PyInit_pysimplex(void) {
+
+    return PyModuleDef_Init(&PySimplexModuleDef);
+}
+
+
+
+
+
+
+
+
+
+
+
+/*
+
 static PyTypeObject PySimplexType = {
     .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = "pysimplex.PySimplex",
@@ -206,6 +277,7 @@ PyMODINIT_FUNC PyInit_pysimplex(void) {
     return localInit();
 }
 
+*/
 
 
 
