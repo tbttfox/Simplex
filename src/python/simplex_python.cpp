@@ -59,14 +59,11 @@ PySimplex_setdefinition(PySimplex* self, PyObject* jsValue, void* closure){
     self->definition = jsValue;
     Py_DECREF(tmp);
 
-#if PY_MAJOR_VERSION >= 3
     // Get the unicode as a wstring, and a wstring to string converter
     std::wstring simDefw = std::wstring(PyUnicode_AsWideCharString(self->definition, NULL));
     std::wstring_convert<std::codecvt_utf8<wchar_t>> myconv;
     std::string simDef = myconv.to_bytes(simDefw);
-#else
-    std::string simDef = std::string(PyString_AsString(self->definition));
-#endif
+
     // set the definition in the solver
     self->sPointer->clear();
     self->sPointer->parseJSON(simDef);
@@ -147,60 +144,126 @@ static PyGetSetDef PySimplex_getseters[] = {
      (getter)PySimplex_getexactsolve, (setter)PySimplex_setexactsolve,
      (char*)"Run the solve with the exact min() solver",
      NULL},
-    {NULL}  /* Sentinel */
+    {NULL}  // Sentinel
 };
 
 static PyMethodDef PySimplex_methods[] = {
     {(char*)"solve", (PyCFunction)PySimplex_solve, METH_O,
      (char*)"Supply an input list to the solver, and recieve and output list"
     },
-    {NULL}  /* Sentinel */
+    {NULL}  // Sentinel
 };
 
+
+
+static PyTypeObject PySimplexType = {
+    .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "pysimplex.PySimplex",
+    .tp_doc = "PySimplex objects",
+    .tp_basicsize = sizeof(PySimplex),
+    .tp_dealloc = (destructor)PySimplex_dealloc,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+    .tp_methods = PySimplex_methods,
+    .tp_getset = PySimplex_getseters,
+    .tp_init = (initproc)PySimplex_init,
+    .tp_new = PySimplex_new,
+};
+
+static PyModuleDef PySimplexModuleDef = {
+    .m_base = PyModuleDef_HEAD_INIT,
+    .m_name = "pysimplex",
+    .m_doc = "The Simplex blendshape solver in Python",
+    .m_size = -1,
+};
+
+
+static PyObject * localInit(void)
+{
+    PyObject* m;
+
+    if (PyType_Ready(&PySimplexType) < 0)
+        return NULL;
+    m = PyModule_Create(&PySimplexModuleDef);
+
+    if (m == NULL)
+        return NULL;
+
+    if (PyModule_AddObjectRef(m, "PySimplex", (PyObject *)&PySimplexType) < 0) {
+        Py_DECREF(m);
+        return NULL;
+    }
+    return m;
+
+}
+
+PyMODINIT_FUNC PyInit_pysimplex(void) {
+    return localInit();
+}
+
+
+
+
+
+
+
+
+/*
 static PyTypeObject PySimplexType = {
     PyVarObject_HEAD_INIT(NULL, 0)
-    "pysimplex.PySimplex",             /* tp_name */
-    sizeof(PySimplex),             /* tp_basicsize */
-    0,                         /* tp_itemsize */
-    (destructor)PySimplex_dealloc, /* tp_dealloc */
-    0,                         /* tp_print */
-    0,                         /* tp_getattr */
-    0,                         /* tp_setattr */
-    0,                         /* tp_compare */
-    0,                         /* tp_repr */
-    0,                         /* tp_as_number */
-    0,                         /* tp_as_sequence */
-    0,                         /* tp_as_mapping */
-    0,                         /* tp_hash */
-    0,                         /* tp_call */
-    0,                         /* tp_str */
-    0,                         /* tp_getattro */
-    0,                         /* tp_setattro */
-    0,                         /* tp_as_buffer */
+    "pysimplex.PySimplex",             // tp_name
+    sizeof(PySimplex),             // tp_basicsize
+    0,                         // tp_itemsize
+    (destructor)PySimplex_dealloc, // tp_dealloc
+    0,                         // tp_print
+    0,                         // tp_getattr
+    0,                         // tp_setattr
+    0,                         // tp_compare
+    0,                         // tp_repr
+    0,                         // tp_as_number
+    0,                         // tp_as_sequence
+    0,                         // tp_as_mapping
+    0,                         // tp_hash
+    0,                         // tp_call
+    0,                         // tp_str
+    0,                         // tp_getattro
+    0,                         // tp_setattro
+    0,                         // tp_as_buffer
     Py_TPFLAGS_DEFAULT |
-        Py_TPFLAGS_BASETYPE,   /* tp_flags */
-    "PySimplex objects",       /* tp_doc */
-    0,                         /* tp_traverse */
-    0,                         /* tp_clear */
-    0,                         /* tp_richcompare */
-    0,                         /* tp_weaklistoffset */
-    0,                         /* tp_iter */
-    0,                         /* tp_iternext */
-    PySimplex_methods,         /* tp_methods */
-    0,                         /* tp_members */
-    PySimplex_getseters,       /* tp_getset */
-    0,                         /* tp_base */
-    0,                         /* tp_dict */
-    0,                         /* tp_descr_get */
-    0,                         /* tp_descr_set */
-    0,                         /* tp_dictoffset */
-    (initproc)PySimplex_init,  /* tp_init */
-    0,                         /* tp_alloc */
-    PySimplex_new,             /* tp_new */
+        Py_TPFLAGS_BASETYPE,   // tp_flags
+    "PySimplex objects",       // tp_doc
+    0,                         // tp_traverse
+    0,                         // tp_clear
+    0,                         // tp_richcompare
+    0,                         // tp_weaklistoffset
+    0,                         // tp_iter
+    0,                         // tp_iternext
+    PySimplex_methods,         // tp_methods
+    0,                         // tp_members
+    PySimplex_getseters,       // tp_getset
+    0,                         // tp_base
+    0,                         // tp_dict
+    0,                         // tp_descr_get
+    0,                         // tp_descr_set
+    0,                         // tp_dictoffset
+    (initproc)PySimplex_init,  // tp_init
+    0,                         // tp_alloc
+    PySimplex_new,             // tp_new
 };
 
 static PyMethodDef module_methods[] = {
-    {NULL}  /* Sentinel */
+    {NULL}  // Sentinel
+};
+
+static struct PyModuleDef PySimplexModuleDef = {
+    PyModuleDef_HEAD_INIT,
+    "pysimplex",     // m_name
+    "The Simplex blendshape solver in Python",  // m_doc
+    -1,                  // m_size
+    module_methods,      // m_methods
+    NULL,                // m_reload
+    NULL,                // m_traverse
+    NULL,                // m_clear
+    NULL,                // m_free
 };
 
 static PyObject * localInit(void)
@@ -209,24 +272,7 @@ static PyObject * localInit(void)
 
     if (PyType_Ready(&PySimplexType) < 0)
         return NULL;
-
-#if PY_MAJOR_VERSION >= 3
-    static struct PyModuleDef moduledef = {
-        PyModuleDef_HEAD_INIT,
-        "pysimplex",     /* m_name */
-        "The Simplex blendshape solver in Python",  /* m_doc */
-        -1,                  /* m_size */
-        module_methods,      /* m_methods */
-        NULL,                /* m_reload */
-        NULL,                /* m_traverse */
-        NULL,                /* m_clear */
-        NULL,                /* m_free */
-    };
-    m = PyModule_Create(&moduledef);
-#else
-    m = Py_InitModule3("pysimplex", module_methods,
-        "The Simplex blendshape solver in Python");
-#endif
+    m = PyModule_Create(&PySimplexModuleDef);
 
     if (m == NULL)
         return NULL;
@@ -236,12 +282,13 @@ static PyObject * localInit(void)
     return m;
 }
 
-#if PY_MAJOR_VERSION >= 3
 PyMODINIT_FUNC PyInit_pysimplex(void) {
     return localInit();
 }
-#else
-PyMODINIT_FUNC initpysimplex(void) {
-    localInit();
-}
-#endif
+*/
+
+
+
+
+
+
