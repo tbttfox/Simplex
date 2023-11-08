@@ -316,7 +316,7 @@ jobs:
       - name: Build
         run: |
           cmake --build ${{github.workspace}}/pybuild --config ${{env.BUILD_TYPE}}
-          cp ./pybuild/src/python/${{env.BUILD_TYPE}}/pysimplex.so .
+          cp ./pybuild/src/python/pysimplex.so .
 
       - name: Build Wheel
         run: |
