@@ -246,7 +246,8 @@ jobs:
         run: |
           py -3 -m pip install -U build wheel
           py -3 -m build --wheel
-          py -3 -m wheel tags --remove --python-tag cp3 --abi-tag abi3 --platform-tag win_amd64 *.whl
+          $PY_WHEEL = Get-ChildItem -Name dist/*.whl
+          py -3 -m wheel tags --remove --python-tag cp3 --abi-tag abi3 --platform-tag win_amd64 dist/$PY_WHEEL
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v3
@@ -281,7 +282,8 @@ jobs:
         run: |
           python3 -m pip install -U build wheel
           python3 -m build --wheel
-          python3 -m wheel tags --remove --python-tag cp3 --abi-tag abi3 --platform-tag macosx_10_9_x86_64 *.whl
+          PY_WHEEL=( "dist/*.whl" )
+          python3 -m wheel tags --remove --python-tag cp3 --abi-tag abi3 --platform-tag macosx_10_9_x86_64 dist/${PY_WHEEL}
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v3
@@ -312,7 +314,8 @@ jobs:
         run: |
           python3 -m pip install -U build wheel
           python3 -m build --wheel
-          python3 -m wheel tags --remove --python-tag cp3 --abi-tag abi3 --platform-tag linux_x86_64 *.whl
+          PY_WHEEL=( "dist/*.whl" )
+          python3 -m wheel tags --remove --python-tag cp3 --abi-tag abi3 --platform-tag linux_x86_64 dist/${PY_WHEEL}
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v3
