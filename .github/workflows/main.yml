@@ -282,8 +282,10 @@ jobs:
         run: |
           python3 -m pip install -U build wheel
           python3 -m build --wheel
-          PY_WHEEL=( "dist/*.whl" )
+          for PY_WHEEL in dist/*.whl
+          do
           python3 -m wheel tags --remove --python-tag cp3 --abi-tag abi3 --platform-tag macosx_10_9_x86_64 dist/${PY_WHEEL}
+          done
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v3
@@ -314,8 +316,10 @@ jobs:
         run: |
           python3 -m pip install -U build wheel
           python3 -m build --wheel
-          PY_WHEEL=( "dist/*.whl" )
+          for PY_WHEEL in dist/*.whl
+          do
           python3 -m wheel tags --remove --python-tag cp3 --abi-tag abi3 --platform-tag linux_x86_64 dist/${PY_WHEEL}
+          done
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v3
