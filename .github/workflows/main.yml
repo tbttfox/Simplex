@@ -301,13 +301,7 @@ jobs:
 
       - name: Configure CMake
         run: |
-          mkdir build
-          cd build
-          cmake -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DMAYA_VERSION=${{matrix.maya}} -DMAYA_DEVKIT_BASE="/usr/autodesk/devkitBase" ..
-
-      - name: Configure CMake
-        run: |
-          cmake -G Xcode -B ${{github.workspace}}/pybuild -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DBUILD_MAYA=NO -DMAYA_PYTHON=NO -DSYSTEM_PY_VERSION=3
+          cmake -B ${{github.workspace}}/pybuild -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DBUILD_MAYA=NO -DMAYA_PYTHON=NO -DSYSTEM_PY_VERSION=3
 
       - name: Build
         run: cmake --build ${{github.workspace}}/pybuild --config ${{env.BUILD_TYPE}}
