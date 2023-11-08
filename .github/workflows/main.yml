@@ -254,7 +254,7 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: win64-python
+          name: wheels
           path: dist/*.whl
 
   python-macos:
@@ -294,7 +294,7 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: mac-python
+          name: wheels
           path: dist/*.whl
 
   python-linux:
@@ -330,7 +330,7 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: linux-python
+          name: wheels
           path: dist/*.whl
 
 #
@@ -365,6 +365,14 @@ jobs:
         with:
           path: modules/simplex
 
+      - name: Move Wheels
+        run: |
+          mv modules/simplex/wheels/*.whl .
+          rm -rf modules/simplex/wheels
+
+      - name: Display structure of working directory
+        run: ls -R
+
       - name: Build Modfile
         run: |
           python buildmodfile.py modules/simplex.mod --name simplex --path modules/simplex
@@ -389,4 +397,5 @@ jobs:
           title: "TESTING"
           files: |
             simplex.zip
+            *.whl
 
