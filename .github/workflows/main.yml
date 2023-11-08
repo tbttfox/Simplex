@@ -246,7 +246,8 @@ jobs:
 
       - name: Build Wheel
         run: |
-          py -3 -m pip install -U build wheel
+          py -3 -m pip install -U build wheel hatch
+          hatch version $(git describe --tags --abbrev=0)
           py -3 -m build --wheel
           $PY_WHEEL = Get-ChildItem -Name dist/*.whl
           py -3 -m wheel tags --remove --python-tag cp3 --abi-tag abi3 --platform-tag win_amd64 dist/$PY_WHEEL
@@ -284,7 +285,8 @@ jobs:
 
       - name: Build Wheel
         run: |
-          python3 -m pip install -U build wheel
+          python3 -m pip install -U build wheel hatch
+          hatch version $(git describe --tags --abbrev=0)
           python3 -m build --wheel
           for PY_WHEEL in dist/*.whl
           do
@@ -320,7 +322,8 @@ jobs:
 
       - name: Build Wheel
         run: |
-          python3 -m pip install -U build wheel
+          python3 -m pip install -U build wheel hatch
+          hatch version $(git describe --tags --abbrev=0)
           python3 -m build --wheel
           for PY_WHEEL in dist/*.whl
           do
@@ -385,7 +388,7 @@ jobs:
           mkdir -p modules/simplex/scripts
           cp -r ./simplexui modules/simplex/scripts
           cd modules
-          zip -r ../simplex.zip .
+          zip -r ../simplex-$(git describe --tags --abbrev=0).zip .
           cd ..
 
       - name: Upload distribution
@@ -396,6 +399,6 @@ jobs:
           automatic_release_tag: "latest"
           title: "TESTING"
           files: |
-            simplex.zip
+            *.zip
             *.whl
 
