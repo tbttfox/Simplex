@@ -1,6 +1,6 @@
 [project]
 name = "simplexui"
-version = "3.0.6"
+version = "v0.0.0"
 authors = [
   { name="Tyler Fox", email="tyler@blur.com" },
 ]
