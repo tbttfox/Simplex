@@ -240,7 +240,9 @@ jobs:
           cmake -B ${{github.workspace}}/pybuild -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DBUILD_MAYA=NO -DMAYA_PYTHON=NO -DSYSTEM_PY_VERSION=3
 
       - name: Build
-        run: cmake --build ${{github.workspace}}/pybuild --config ${{env.BUILD_TYPE}}
+        run: |
+          cmake --build ${{github.workspace}}/pybuild --config ${{env.BUILD_TYPE}}
+          cp ./pybuild/src/python/${{env.BUILD_TYPE}}/pysimplex.pyd .
 
       - name: Build Wheel
         run: |
@@ -276,7 +278,9 @@ jobs:
           cmake -G Xcode -B ${{github.workspace}}/pybuild -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DBUILD_MAYA=NO -DMAYA_PYTHON=NO -DSYSTEM_PY_VERSION=3
 
       - name: Build
-        run: cmake --build ${{github.workspace}}/pybuild --config ${{env.BUILD_TYPE}}
+        run: |
+          cmake --build ${{github.workspace}}/pybuild --config ${{env.BUILD_TYPE}}
+          cp ./pybuild/src/python/${{env.BUILD_TYPE}}/pysimplex.so .
 
       - name: Build Wheel
         run: |
@@ -310,7 +314,9 @@ jobs:
           cmake -B ${{github.workspace}}/pybuild -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DBUILD_MAYA=NO -DMAYA_PYTHON=NO -DSYSTEM_PY_VERSION=3
 
       - name: Build
-        run: cmake --build ${{github.workspace}}/pybuild --config ${{env.BUILD_TYPE}}
+        run: |
+          cmake --build ${{github.workspace}}/pybuild --config ${{env.BUILD_TYPE}}
+          cp ./pybuild/src/python/${{env.BUILD_TYPE}}/pysimplex.so .
 
       - name: Build Wheel
         run: |
