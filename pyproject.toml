@@ -1,6 +1,9 @@
 [project]
 name = "simplexui"
-version = "v0.0.0"
+dynamic = [
+    "version"
+]
+
 authors = [
   { name="Tyler Fox", email="tyler@blur.com" },
 ]
@@ -40,3 +43,5 @@ artifacts = [
     "/*.pyd",
 ]
 
+[tool.hatch.version]
+path = "simplexui/__init__.py"
