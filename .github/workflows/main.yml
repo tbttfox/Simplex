@@ -284,7 +284,7 @@ jobs:
           python3 -m build --wheel
           for PY_WHEEL in dist/*.whl
           do
-          python3 -m wheel tags --remove --python-tag cp3 --abi-tag abi3 --platform-tag macosx_10_9_x86_64 dist/${PY_WHEEL}
+          python3 -m wheel tags --remove --python-tag cp3 --abi-tag abi3 --platform-tag macosx_10_9_x86_64 ${PY_WHEEL}
           done
 
       - name: Upload Artifacts
@@ -318,7 +318,7 @@ jobs:
           python3 -m build --wheel
           for PY_WHEEL in dist/*.whl
           do
-          python3 -m wheel tags --remove --python-tag cp3 --abi-tag abi3 --platform-tag linux_x86_64 dist/${PY_WHEEL}
+          python3 -m wheel tags --remove --python-tag cp3 --abi-tag abi3 --platform-tag linux_x86_64 ${PY_WHEEL}
           done
 
       - name: Upload Artifacts
