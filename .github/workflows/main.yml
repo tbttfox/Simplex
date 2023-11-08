@@ -243,15 +243,15 @@ jobs:
         run: cmake --build ${{github.workspace}}/pybuild --config ${{env.BUILD_TYPE}}
 
       - name: Build Wheel
-        run: echo "Build Wheel"
+        run: |
+          py -3 -m build --wheel
+          py -3 -m wheel tags --remove --python-tag cp3 --abi-tag abi3 --platform-tag win_amd64 *.whl
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: win64-${{matrix.maya}}
-          path: |
-            artifacts/plug-ins/simplex_maya.mll
-            artifacts/pyModules/py*simplex.pyd
+          name: win64-python
+          path: dist/*.whl
 
   python-macos:
     runs-on: macos-12
@@ -277,15 +277,15 @@ jobs:
         run: cmake --build ${{github.workspace}}/pybuild --config ${{env.BUILD_TYPE}}
 
       - name: Build Wheel
-        run: echo "Build Wheel"
+        run: |
+          python3 -m build --wheel
+          python3 -m wheel tags --remove --python-tag cp3 --abi-tag abi3 --platform-tag macosx_10_9_x86_64 *.whl
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: mac-${{matrix.maya}}
-          path: |
-            artifacts/plug-ins/simplex_maya.bundle
-            artifacts/pyModules/py*simplex.so
+          name: mac-python
+          path: dist/*.whl
 
   python-linux:
     runs-on: ubuntu-latest
@@ -307,15 +307,15 @@ jobs:
         run: cmake --build ${{github.workspace}}/pybuild --config ${{env.BUILD_TYPE}}
 
       - name: Build Wheel
-        run: echo "Build Wheel"
+        run: |
+          python3 -m build --wheel
+          python3 -m wheel tags --remove --python-tag cp3 --abi-tag abi3 --platform-tag linux_x86_64 *.whl
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: linux-${{matrix.year}}
-          path: |
-            artifacts/plug-ins/simplex_maya.so
-            artifacts/pyModules/py*simplex.so
+          name: linux-python
+          path: dist/*.whl
 
 #
 # SHIPPING
