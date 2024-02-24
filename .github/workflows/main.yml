@@ -371,6 +371,7 @@ jobs:
         with:
           name: test_1
           prerelease: false
+          token: "${{ secrets.GITHUB_TOKEN }}"
           files: |
             *.zip
             *.whl
