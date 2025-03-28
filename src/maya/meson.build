@@ -4,6 +4,7 @@ maya_version = maya_dep.get_variable('maya_version')
 
 simplex_maya_files = files([
     'src/basicBlendShape.cpp',
+    'src/blendPose.cpp',
     'src/pluginMain.cpp',
     'src/simplex_mayaNode.cpp',
 ])
@@ -23,7 +24,7 @@ else
 endif
 
 simplex_maya_inc = include_directories(['include'])
-rapidjson_dep = dependency('rapidjson')
+eigen_dep = dependency('eigen3')
 
 simplex_maya = shared_library(
   'simplex_maya',
@@ -31,7 +32,7 @@ simplex_maya = shared_library(
   install: true,
   install_dir : meson.global_source_root() / 'output_Maya' + maya_version,
   include_directories : simplex_maya_inc,
-  dependencies : [maya_dep, simplexlib_dep],
+  dependencies : [maya_dep, simplexlib_dep, eigen_dep],
   name_prefix : '',
   name_suffix : maya_name_suffix,
 )

@@ -19,6 +19,7 @@ along with Simplex.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "simplex_mayaNode.h"
 #include "basicBlendShape.h"
+#include "blendPose.h"
 #include "version.h"
 #include <maya/MFnPlugin.h>
 #include <maya/MObject.h>
@@ -26,20 +27,20 @@ along with Simplex.  If not, see <http://www.gnu.org/licenses/>.
 
 MStatus initializePlugin(MObject obj)
 { 
-	MStatus status;
-	MFnPlugin plugin(obj, "Blur Studio", VERSION_STRING, "Any");
+    MStatus status;
+    MFnPlugin plugin(obj, "Blur Studio", VERSION_STRING, "Any");
 
-	status = plugin.registerNode(
-		"simplex_maya",
-		simplex_maya::id,
-		&simplex_maya::creator,
-		&simplex_maya::initialize
-	);
+    status = plugin.registerNode(
+        "simplex_maya",
+        simplex_maya::id,
+        &simplex_maya::creator,
+        &simplex_maya::initialize
+    );
 
-	if (!status) {
-		status.perror("registerNode simplex_maya");
-		return status;
-	}
+    if (!status) {
+        status.perror("registerNode simplex_maya");
+        return status;
+    }
 
     status = plugin.registerNode(
         "basicBlendShape",
@@ -47,32 +48,52 @@ MStatus initializePlugin(MObject obj)
         &basicBlendShape::creator,
         &basicBlendShape::initialize,
         MPxNode::kBlendShape
-	);
+    );
 
-	if (!status) {
-		status.perror("registerNode basicBlendShape");
-		return status;
-	}
-	return status;
+    if (!status) {
+        status.perror("registerNode basicBlendShape");
+        return status;
+    }
+
+    status = plugin.registerNode(
+        blendPose::typeName,
+        blendPose::id,
+        &blendPose::creator,
+        &blendPose::initialize,
+        MPxNode::kDependNode
+    );
+
+    if (!status) {
+        status.perror("registerNode blendPose");
+        return status;
+    }
+
+    return status;
 }
 
 MStatus uninitializePlugin(MObject obj)
 {
-	MStatus status;
-	MFnPlugin plugin(obj);
+    MStatus status;
+    MFnPlugin plugin(obj);
 
-	status = plugin.deregisterNode(simplex_maya::id);
-	if (!status) {
-		status.perror("deregisterNode simplex_maya");
-		return status;
-	}
+    status = plugin.deregisterNode(simplex_maya::id);
+    if (!status) {
+        status.perror("deregisterNode simplex_maya");
+        return status;
+    }
 
-	status = plugin.deregisterNode(basicBlendShape::id);
-	if (!status) {
-		status.perror("deregisterNode basicBlendShape");
-		return status;
-	}
+    status = plugin.deregisterNode(basicBlendShape::id);
+    if (!status) {
+        status.perror("deregisterNode basicBlendShape");
+        return status;
+    }
 
-	return status;
+    status = plugin.deregisterNode(blendPose::id);
+    if (!status) {
+        status.perror("deregisterNode blendPose");
+        return status;
+    }
+
+    return status;
 }
 
