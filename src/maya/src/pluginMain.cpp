@@ -17,62 +17,105 @@ You should have received a copy of the GNU Lesser General Public License
 along with Simplex.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "simplex_mayaNode.h"
-#include "basicBlendShape.h"
-#include "version.h"
 #include <maya/MFnPlugin.h>
 #include <maya/MObject.h>
 #include <maya/MStatus.h>
 
-MStatus initializePlugin(MObject obj)
-{ 
-	MStatus status;
-	MFnPlugin plugin(obj, "Blur Studio", VERSION_STRING, "Any");
+#include "basicBlendShape.h"
+#include "blendPose.h"
+#include "eulerAxisAngle.h"
+#include "simplex_mayaNode.h"
+#include "version.h"
 
-	status = plugin.registerNode(
-		"simplex_maya",
-		simplex_maya::id,
-		&simplex_maya::creator,
-		&simplex_maya::initialize
-	);
-
-	if (!status) {
-		status.perror("registerNode simplex_maya");
-		return status;
-	}
+MStatus initializePlugin(MObject obj) {
+    MStatus status;
+    MFnPlugin plugin(obj, "Blur Studio", VERSION_STRING, "Any");
 
     status = plugin.registerNode(
-        "basicBlendShape",
-        basicBlendShape::id,
-        &basicBlendShape::creator,
-        &basicBlendShape::initialize,
-        MPxNode::kBlendShape
-	);
+        "simplex_maya", simplex_maya::id, &simplex_maya::creator, &simplex_maya::initialize
+    );
 
-	if (!status) {
-		status.perror("registerNode basicBlendShape");
-		return status;
-	}
-	return status;
+    if (!status) {
+        status.perror("registerNode simplex_maya");
+        return status;
+    }
+
+    status = plugin.registerNode(
+        "basicBlendShape", basicBlendShape::id, &basicBlendShape::creator,
+        &basicBlendShape::initialize, MPxNode::kBlendShape
+    );
+
+    if (!status) {
+        status.perror("registerNode basicBlendShape");
+        return status;
+    }
+
+    status = plugin.registerNode(
+        blendPose::typeName, blendPose::id, &blendPose::creator, &blendPose::initialize,
+        MPxNode::kDependNode
+    );
+
+    if (!status) {
+        status.perror("registerNode blendPose");
+        return status;
+    }
+
+    status = plugin.registerNode(
+        eulerToAxisAngle::typeName, eulerToAxisAngle::id, &eulerToAxisAngle::creator,
+        &eulerToAxisAngle::initialize, MPxNode::kDependNode
+    );
+
+    if (!status) {
+        status.perror("registerNode eulerToAxisAngle");
+        return status;
+    }
+
+    status = plugin.registerNode(
+        axisAngleToEuler::typeName, axisAngleToEuler::id, &axisAngleToEuler::creator,
+        &axisAngleToEuler::initialize, MPxNode::kDependNode
+    );
+
+    if (!status) {
+        status.perror("registerNode axisAngleToEuler");
+        return status;
+    }
+
+    return status;
 }
 
-MStatus uninitializePlugin(MObject obj)
-{
-	MStatus status;
-	MFnPlugin plugin(obj);
+MStatus uninitializePlugin(MObject obj) {
+    MStatus status;
+    MFnPlugin plugin(obj);
 
-	status = plugin.deregisterNode(simplex_maya::id);
-	if (!status) {
-		status.perror("deregisterNode simplex_maya");
-		return status;
-	}
+    status = plugin.deregisterNode(simplex_maya::id);
+    if (!status) {
+        status.perror("deregisterNode simplex_maya");
+        return status;
+    }
 
-	status = plugin.deregisterNode(basicBlendShape::id);
-	if (!status) {
-		status.perror("deregisterNode basicBlendShape");
-		return status;
-	}
+    status = plugin.deregisterNode(basicBlendShape::id);
+    if (!status) {
+        status.perror("deregisterNode basicBlendShape");
+        return status;
+    }
 
-	return status;
+    status = plugin.deregisterNode(blendPose::id);
+    if (!status) {
+        status.perror("deregisterNode blendPose");
+        return status;
+    }
+
+    status = plugin.deregisterNode(eulerToAxisAngle::id);
+    if (!status) {
+        status.perror("deregisterNode eulerToAxisAngle");
+        return status;
+    }
+
+    status = plugin.deregisterNode(axisAngleToEuler::id);
+    if (!status) {
+        status.perror("deregisterNode axisAngleToEuler");
+        return status;
+    }
+
+    return status;
 }
-
