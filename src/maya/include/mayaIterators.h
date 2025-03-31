@@ -114,6 +114,7 @@ inline void getDenseArrayHandleData(MArrayDataHandle& arrayHandle, std::vector<T
             ret.push_back(T());
         }
         ret.push_back(getTypedMDataHandleValue<T>(handle));
+        prevIdx = index + 1;
     }
 }
 

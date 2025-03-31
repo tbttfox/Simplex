@@ -38,7 +38,7 @@
 // For linux and apple
 typedef unsigned int UINT;
 
-MTypeId blendPose::id(0x00122717);
+MTypeId blendPose::id(0x00122716);
 MString blendPose::typeName("blendPose");
 
 // Attribute list
@@ -158,21 +158,24 @@ void blendPose::setAllData(
     const MPlug& plug, MDataBlock& dataBlock, std::vector<MMatrix>& rawMats,
     std::vector<MMatrix>& quatMats
 ) {
-    auto outputRawArrayHandle = dataBlock.outputArrayValue(aOutputRawPose);
-    auto outputRawBuilder = outputRawArrayHandle.builder();
+    auto outputRawHandle = dataBlock.outputArrayValue(aOutputRawPose);
+    auto outputRawBuilder = outputRawHandle.builder();
     for (UINT idx = 0; idx < rawMats.size(); ++idx) {
         auto outputRawHandle = outputRawBuilder.addElement(idx);
         outputRawHandle.set(rawMats[idx]);
     }
+    outputRawHandle.set(outputRawBuilder);
 
-    auto outputArrayHandle = dataBlock.outputArrayValue(aOutputPose);
-    auto outputBuilder = outputArrayHandle.builder();
+    auto outputQuatHandle = dataBlock.outputArrayValue(aOutputPose);
+    auto outputQuatBuilder = outputQuatHandle.builder();
     for (UINT idx = 0; idx < quatMats.size(); ++idx) {
-        auto outputQuatHandle = outputBuilder.addElement(idx);
+        auto outputQuatHandle = outputQuatBuilder.addElement(idx);
         outputQuatHandle.set(quatMats[idx]);
     }
-    outputRawArrayHandle.setAllClean();
-    outputArrayHandle.setAllClean();
+    outputQuatHandle.set(outputQuatBuilder);
+
+    outputRawHandle.setAllClean();
+    outputQuatHandle.setAllClean();
     dataBlock.setClean(plug);
 }
 
@@ -189,7 +192,7 @@ void blendPose::computeRawMats(
 
     for (auto& [poseIdx, poseData] : targets) {
         const auto& [_level, weight, pose] = poseData;
-        if (fabs(weight) < 1.0e-12) {
+        if (std::fabs(weight) < 1.0e-12) {
             continue;
         }
         for (size_t matIdx = 0; matIdx < pose.size(); ++matIdx) {
@@ -202,10 +205,16 @@ void blendPose::computeRawMats(
     }
 }
 
-Eigen::Matrix4f outerq(MQuaternion& q) {
+
+void flipquat(MQuaternion& q) {
     if (q.w < 0) {
         q.negateIt();
     }
+}
+
+
+Eigen::Matrix4f outerq(MQuaternion& q) {
+    flipquat(q);
     Eigen::Matrix4f ret;
     for (size_t i = 0; i < 4; ++i) {
         ret.col(i)[i] = q[i] * q[i];
@@ -229,7 +238,7 @@ void blendPose::computeQuatMats(
 
     for (auto& [poseIdx, poseData] : targets) {
         const auto& [level, weight, pose] = poseData;
-        if (fabs(weight) < 1.0e-12) {
+        if (std::fabs(weight) < 1.0e-12) {
             continue;
         }
         auto& qmatlevel = qmats[level];
@@ -243,7 +252,11 @@ void blendPose::computeQuatMats(
         for (size_t matIdx = 0; matIdx < pose.size(); ++matIdx) {
             MQuaternion matquat, restquat, slerped;
             matquat = pose[matIdx];
+            flipquat(matquat);
+
             restquat = restPose[matIdx];
+            flipquat(restquat);
+
             slerped = slerp(qi, (matquat * restquat.inverse()), weight);
             qmatlevel[matIdx] += outerq(slerped);
             levelCounts[level] += 1.0f;
@@ -253,24 +266,17 @@ void blendPose::computeQuatMats(
     std::map<int, std::vector<MQuaternion>> eigs;
     for (auto& [level, qmatpose] : qmats) {
         float count = levelCounts[level];
-        std::vector<MQuaternion> leveleigs = eigs[level];
+        std::vector<MQuaternion> &leveleigs = eigs[level];
         for (size_t matIdx = 0; matIdx < qmatpose.size(); ++matIdx) {
             Eigen::SelfAdjointEigenSolver<Eigen::Matrix4f> es(qmatpose[matIdx]);
             auto egval = es.eigenvalues();
             int maxidx = 0;
-            float maxval = fabs(egval[0]);
-            for (int i = 1; i < 4; ++i) {
-                if (fabs(egval[i]) > maxval) {
-                    maxidx = i;
-                    maxval = fabs(egval[i]);
-                }
-            }
+            egval.maxCoeff(&maxidx);
             auto evec = es.eigenvectors().col(maxidx);
             MQuaternion q(evec[0], evec[1], evec[2], evec[3]);
+            flipquat(q);
             q = slerp(qi, q, count);
-            if (q.w < 0) {
-                q.negateIt();
-            }
+            flipquat(q);
             leveleigs.push_back(q.normal());
         }
     }
@@ -286,6 +292,10 @@ void blendPose::computeQuatMats(
 MStatus blendPose::compute(const MPlug& plug, MDataBlock& dataBlock) {
     MStatus status;
 
+    if (plug != aOutputRawPose && plug != aOutputPose) {
+        return (MStatus::kUnknownParameter);
+    }
+
     std::unordered_map<int, std::tuple<int, float, std::vector<MMatrix>>> targets;
     std::vector<MMatrix> restPose;
     getAllData(dataBlock, targets, restPose);
@@ -300,8 +310,8 @@ MStatus blendPose::compute(const MPlug& plug, MDataBlock& dataBlock) {
     computeQuatMats(targets, restPose, quatMats);
 
     for (size_t idx = 0; idx < rawMats.size(); ++idx) {
-        auto r = rawMats[idx];
-        auto q = quatMats[idx];
+        const auto &r = rawMats[idx];
+        auto &q = quatMats[idx];
         q[3][0] = r[3][0];
         q[3][1] = r[3][1];
         q[3][2] = r[3][2];
