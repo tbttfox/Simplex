@@ -27,6 +27,7 @@ along with Simplex.  If not, see <http://www.gnu.org/licenses/>.
 #include <maya/MMatrix.h>
 #include <maya/MPxNode.h>
 #include <maya/MTypeId.h>
+#include <maya/MVector.h>
 
 #include <unordered_map>
 
@@ -35,34 +36,53 @@ class blendPose : public MPxNode {
     static void* creator();
     static MStatus initialize();
     virtual MStatus compute(const MPlug& plug, MDataBlock& data);
+
     void getAllData(
         MDataBlock& dataBlock,
-        std::unordered_map<int, std::tuple<int, float, std::vector<MMatrix>>>& targets,
-        std::vector<MMatrix>& restPose
+        std::vector<MVector>& restAAs,               // aOrigAxisAngle
+        std::vector<MMatrix>& restMats,              // aOrigMatrix
+        std::vector<bool>& restUseMats,              // aOrigUseMatrix
+        std::vector<std::vector<MVector>>& tarAAs,   // aTargetPoseAxisAngle
+        std::vector<std::vector<MMatrix>>& tarMats,  // aTargetPoseMatrix
+        std::vector<std::vector<bool>>& tarUseMats,  // aTargetPoseUseMatrix
+        std::vector<float>& weights                  // aWeight
     );
 
     void setAllData(
-        const MPlug& plug, MDataBlock& dataBlock, std::vector<MMatrix>& rawMats,
-        std::vector<MMatrix>& quatMats
+        MDataBlock& dataBlock, const std::vector<MMatrix>& outLinMats,
+        const std::vector<MMatrix>& outLogMats, const std::vector<MVector>& outAAs
     );
 
-    void computeRawMats(
-        const std::unordered_map<int, std::tuple<int, float, std::vector<MMatrix>>>& targets,
-        const std::vector<MMatrix>& restPose, std::vector<MMatrix>& rawMats
+    template <typename T>
+    std::vector<T> computeData(
+        std::vector<std::vector<T>> targets, std::vector<float> weights, T zero, T offset,
+        bool useOffset
     );
 
-    void computeQuatMats(
-        const std::unordered_map<int, std::tuple<int, float, std::vector<MMatrix>>>& targets,
-        const std::vector<MMatrix>& restPose, std::vector<MMatrix>& QuatMats
+    void decomposeMatList(
+        const std::vector<MMatrix>& allmats, const std::vector<MVector>& allAAs,
+        const std::vector<bool>& allUseMats, std::vector<MVector>& restScale,
+        std::vector<MVector>& restShear, std::vector<MVector>& restAAs,
+        std::vector<MVector>& restTran
     );
 
    public:
-    static MObject aOutputPose;
-    static MObject aOutputRawPose;
-    static MObject aOriginalPose;
-    static MObject aInputTarget;
-    static MObject aInputTargetPose;
-    static MObject aInputTargetLevel;
+    static MObject aOutput;
+    static MObject aOutputAxisAngle;
+    static MObject aOutputLinearMatrix;
+    static MObject aOutputLogMatrix;
+
+    static MObject aOrig;
+    static MObject aOrigAxisAngle;
+    static MObject aOrigMatrix;
+    static MObject aOrigUseMatrix;
+
+    static MObject aTarget;
+    static MObject aTargetPose;
+    static MObject aTargetPoseAxisAngle;
+    static MObject aTargetPoseMatrix;
+    static MObject aTargetPoseUseMatrix;
+
     static MObject aWeight;
 
     static MTypeId id;

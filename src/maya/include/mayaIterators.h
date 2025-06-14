@@ -1,83 +1,135 @@
+#include <maya/MArrayDataBuilder.h>
 #include <maya/MArrayDataHandle.h>
 #include <maya/MDataBlock.h>
 #include <maya/MDataHandle.h>
 #include <maya/MFnAttribute.h>
 
 #include <iterator>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>  // For std::pair
 #include <vector>
 
-class MArrayDataHandleIterator {
+template <typename Container>
+class MArrayOutputDataHandleRange {
    public:
-    using iterator_category = std::bidirectional_iterator_tag;
-    using value_type = std::pair<unsigned int, MDataHandle>;
-    using difference_type = std::ptrdiff_t;
-    using pointer = value_type*;
-    using reference = value_type&;
+    using IteratorType = decltype(std::begin(std::declval<Container&>()));
+    using ValueType = typename std::decay<decltype(*std::begin(std::declval<Container&>()))>::type;
 
-    explicit MArrayDataHandleIterator(MArrayDataHandle* handle, unsigned int index = 0)
-        : m_handle(handle), m_index(index), m_count(handle ? handle->elementCount() : 0) {
-        if (m_handle && m_index < m_count) {
-            m_handle->jumpToArrayElement(m_index);
+    static constexpr bool is_keyed = std::is_same<
+        typename std::iterator_traits<IteratorType>::value_type,
+        std::pair<const int, typename ValueType::second_type>>::value;
+
+    class Iterator {
+       public:
+        Iterator(MArrayDataBuilder& builder, IteratorType iter)
+            : m_builder(builder), m_iter(iter) {}
+
+        bool operator!=(const Iterator& other) const { return m_iter != other.m_iter; }
+
+        void operator++() { ++m_iter; }
+
+        auto operator*() {
+            int logicalIndex = getIndex();
+            MDataHandle handle = m_builder.addElement(logicalIndex);
+            return std::make_pair(handle, logicalIndex);
         }
-    }
 
-    // Dereference operator returning {index, handle}
-    value_type operator*() const { return {m_handle->elementIndex(), m_handle->inputValue()}; }
+       private:
+        MArrayDataBuilder& m_builder;
+        IteratorType m_iter;
 
-    // Pre-increment
-    MArrayDataHandleIterator& operator++() {
-        if (m_handle && ++m_index < m_count) {
-            m_handle->jumpToArrayElement(m_index);
+        int getIndex() {
+            if constexpr (is_keyed) {
+                return m_iter->first;
+            } else {
+                return static_cast<int>(
+                    std::distance(std::begin(std::declval<Container&>()), m_iter)
+                );
+            }
         }
-        return *this;
-    }
+    };
 
-    // Post-increment
-    MArrayDataHandleIterator operator++(int) {
-        MArrayDataHandleIterator temp = *this;
-        ++(*this);
-        return temp;
-    }
+    MArrayOutputDataHandleRange(MArrayDataBuilder& builder, Container& container)
+        : m_builder(builder), m_container(container) {}
 
-    // Pre-decrement
-    MArrayDataHandleIterator& operator--() {
-        if (m_handle && m_index > 0) {
-            --m_index;
-            m_handle->jumpToArrayElement(m_index);
-        }
-        return *this;
-    }
+    Iterator begin() { return Iterator(m_builder, std::begin(m_container)); }
 
-    // Post-decrement
-    MArrayDataHandleIterator operator--(int) {
-        MArrayDataHandleIterator temp = *this;
-        --(*this);
-        return temp;
-    }
-
-    // Comparisons
-    bool operator==(const MArrayDataHandleIterator& other) const {
-        return m_index == other.m_index && m_handle == other.m_handle;
-    }
-    bool operator!=(const MArrayDataHandleIterator& other) const { return !(*this == other); }
+    Iterator end() { return Iterator(m_builder, std::end(m_container)); }
 
    private:
-    MArrayDataHandle* m_handle;
-    unsigned int m_index;
-    unsigned int m_count;
+    MArrayDataBuilder& m_builder;
+    Container& m_container;
 };
 
 // Wrapper for range-based iteration
-class MArrayDataHandleRange {
+class MArrayInputDataHandleRange {
    public:
-    explicit MArrayDataHandleRange(MArrayDataHandle& handle) : m_handle(handle) {}
+    class Iterator {
+       public:
+        using iterator_category = std::bidirectional_iterator_tag;
+        using value_type = std::pair<unsigned int, MDataHandle>;
+        using difference_type = std::ptrdiff_t;
+        using pointer = value_type*;
+        using reference = value_type&;
 
-    MArrayDataHandleIterator begin() { return MArrayDataHandleIterator(&m_handle, 0); }
-    MArrayDataHandleIterator end() {
-        return MArrayDataHandleIterator(&m_handle, m_handle.elementCount());
-    }
+        explicit Iterator(MArrayDataHandle* handle, unsigned int index = 0)
+            : m_handle(handle), m_index(index), m_count(handle ? handle->elementCount() : 0) {
+            if (m_handle && m_index < m_count) {
+                m_handle->jumpToArrayElement(m_index);
+            }
+        }
+
+        // Dereference operator returning {index, inputHandle}
+        value_type operator*() const { return {m_handle->elementIndex(), m_handle->inputValue()}; }
+
+        // Pre-increment
+        Iterator& operator++() {
+            if (m_handle && ++m_index < m_count) {
+                m_handle->jumpToArrayElement(m_index);
+            }
+            return *this;
+        }
+
+        // Post-increment
+        Iterator operator++(int) {
+            Iterator temp = *this;
+            ++(*this);
+            return temp;
+        }
+
+        // Pre-decrement
+        Iterator& operator--() {
+            if (m_handle && m_index > 0) {
+                --m_index;
+                m_handle->jumpToArrayElement(m_index);
+            }
+            return *this;
+        }
+
+        // Post-decrement
+        Iterator operator--(int) {
+            Iterator temp = *this;
+            --(*this);
+            return temp;
+        }
+
+        // Comparisons
+        bool operator==(const Iterator& other) const {
+            return m_index == other.m_index && m_handle == other.m_handle;
+        }
+        bool operator!=(const Iterator& other) const { return !(*this == other); }
+
+       private:
+        MArrayDataHandle* m_handle;
+        unsigned int m_index;
+        unsigned int m_count;
+    };
+
+    explicit MArrayInputDataHandleRange(MArrayDataHandle& handle) : m_handle(handle) {}
+
+    Iterator begin() { return Iterator(&m_handle, 0); }
+    Iterator end() { return Iterator(&m_handle, m_handle.elementCount()); }
 
    private:
     MArrayDataHandle& m_handle;
@@ -109,7 +161,7 @@ T getTypedMDataHandleValue(const MDataHandle& handle) {
 template <typename T>
 inline void getDenseArrayHandleData(MArrayDataHandle& arrayHandle, std::vector<T>& ret) {
     int prevIdx = 0;
-    for (auto [index, handle] : MArrayDataHandleRange(arrayHandle)) {
+    for (auto [index, handle] : MArrayInputDataHandleRange(arrayHandle)) {
         for (; prevIdx < index; ++prevIdx) {
             ret.push_back(T());
         }
@@ -125,14 +177,27 @@ inline void getDenseArrayHandleData(MDataBlock& dataBlock, MObject& attr, std::v
 }
 
 template <typename T>
-inline void getSparseArrayHandleData(MArrayDataHandle& arrayHandle, std::unordered_map<UINT, T> &ret) {
-    for (auto [index, handle] : MArrayDataHandleRange(arrayHandle)) {
+inline void getSparseArrayHandleData(
+    MArrayDataHandle& arrayHandle, std::unordered_map<UINT, T>& ret
+) {
+    for (auto [index, handle] : MArrayInputDataHandleRange(arrayHandle)) {
         ret[index] = getTypedMDataHandleValue<T>(handle);
     }
 }
 
 template <typename T>
-inline void getSparseArrayHandleData(MDataBlock& dataBlock, MObject& attr, std::unordered_map<UINT, T> &ret) {
+inline void getSparseArrayHandleData(
+    MDataBlock& dataBlock, MObject& attr, std::unordered_map<UINT, T>& ret
+) {
     MArrayDataHandle handle = dataBlock.inputArrayValue(attr);
     getSparseArrayHandleData<T>(handle, ret);
+}
+
+template <typename Container>
+inline void setArrayHandleData(MArrayDataHandle& arrayHandle, Container& values) {
+    // You should probably just do this one yourself
+    MArrayDataBuilder builder = arrayHandle.builder();
+    for (auto [handle, value] : MArrayOutputDataHandleRange(builder, values)) {
+        handle.set(value);
+    }
 }
