@@ -5,6 +5,8 @@ maya_version = maya_dep.get_variable('maya_version')
 simplex_maya_files = files([
     'src/basicBlendShape.cpp',
     'src/blendPose.cpp',
+    'src/eulerAxisAngle.cpp',
+    'src/matutils.cpp',
     'src/pluginMain.cpp',
     'src/simplex_mayaNode.cpp',
 ])
