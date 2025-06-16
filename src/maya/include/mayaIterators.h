@@ -10,58 +10,6 @@
 #include <utility>  // For std::pair
 #include <vector>
 
-template <typename Container>
-class MArrayOutputDataHandleRange {
-   public:
-    using IteratorType = decltype(std::begin(std::declval<Container&>()));
-    using ValueType = typename std::decay<decltype(*std::begin(std::declval<Container&>()))>::type;
-
-    static constexpr bool is_keyed = std::is_same<
-        typename std::iterator_traits<IteratorType>::value_type,
-        std::pair<const int, typename ValueType::second_type>>::value;
-
-    class Iterator {
-       public:
-        Iterator(MArrayDataBuilder& builder, IteratorType iter)
-            : m_builder(builder), m_iter(iter) {}
-
-        bool operator!=(const Iterator& other) const { return m_iter != other.m_iter; }
-
-        void operator++() { ++m_iter; }
-
-        auto operator*() {
-            int logicalIndex = getIndex();
-            MDataHandle handle = m_builder.addElement(logicalIndex);
-            return std::make_pair(handle, logicalIndex);
-        }
-
-       private:
-        MArrayDataBuilder& m_builder;
-        IteratorType m_iter;
-
-        int getIndex() {
-            if constexpr (is_keyed) {
-                return m_iter->first;
-            } else {
-                return static_cast<int>(
-                    std::distance(std::begin(std::declval<Container&>()), m_iter)
-                );
-            }
-        }
-    };
-
-    MArrayOutputDataHandleRange(MArrayDataBuilder& builder, Container& container)
-        : m_builder(builder), m_container(container) {}
-
-    Iterator begin() { return Iterator(m_builder, std::begin(m_container)); }
-
-    Iterator end() { return Iterator(m_builder, std::end(m_container)); }
-
-   private:
-    MArrayDataBuilder& m_builder;
-    Container& m_container;
-};
-
 // Wrapper for range-based iteration
 class MArrayInputDataHandleRange {
    public:
@@ -191,13 +139,4 @@ inline void getSparseArrayHandleData(
 ) {
     MArrayDataHandle handle = dataBlock.inputArrayValue(attr);
     getSparseArrayHandleData<T>(handle, ret);
-}
-
-template <typename Container>
-inline void setArrayHandleData(MArrayDataHandle& arrayHandle, Container& values) {
-    // You should probably just do this one yourself
-    MArrayDataBuilder builder = arrayHandle.builder();
-    for (auto [handle, value] : MArrayOutputDataHandleRange(builder, values)) {
-        handle.set(value);
-    }
 }
