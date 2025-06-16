@@ -1,5 +1,4 @@
 #include "blendPose.h"
-#include "matutils.h"
 
 #include <maya/MArrayDataBuilder.h>
 #include <maya/MArrayDataHandle.h>
@@ -19,6 +18,7 @@
 #include <unordered_map>
 
 #include "Eigen/Dense"
+#include "matutils.h"
 #include "mayaIterators.h"
 
 #define CHECKSTATAFFECTS(s)             \
@@ -61,7 +61,6 @@ MObject blendPose::aTargetPoseMatrix;
 MObject blendPose::aTargetPoseUseMatrix;
 
 MObject blendPose::aWeight;
-
 
 void* blendPose::creator() { return new blendPose(); }
 
@@ -259,7 +258,8 @@ void blendPose::setAllData(
 ) {
     MArrayDataHandle outAH = dataBlock.outputArrayValue(aOutput);
     MArrayDataBuilder builder = outAH.builder();
-    for (auto [handle, key] : MArrayOutputDataHandleRange(builder, outLinMats)) {
+    for (int key = 0; key < outLinMats.size(); ++key) {
+        MDataHandle handle = builder.addElement(key);
         handle.child(aOutputAxisAngle).setMVector(outAAs[key]);
         handle.child(aOutputLinearMatrix).setMMatrix(outLinMats[key]);
         handle.child(aOutputLogMatrix).setMMatrix(outLogMats[key]);
