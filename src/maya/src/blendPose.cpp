@@ -234,7 +234,7 @@ void blendPose::getAllData(
             poseUseMats.resize(restMats.size());
         }
 
-        MArrayDataHandle ah = tarhandle;
+        MArrayDataHandle ah = tarhandle.child(aTargetPose);
         prevIdx = 0;
         for (auto [index, handle] : MArrayInputDataHandleRange(ah)) {
             for (; prevIdx < index; ++prevIdx) {
@@ -248,6 +248,16 @@ void blendPose::getAllData(
 
             prevIdx = index + 1;
         }
+        for (; prevIdx < restMats.size(); ++prevIdx) {
+            poseMats.push_back(MMatrix());
+            poseUseMats.push_back(false);
+            poseAAs.push_back(MVector());
+        }
+
+        tarAAs.push_back(poseAAs);
+        tarMats.push_back(poseMats);
+        tarUseMats.push_back(poseUseMats);
+
         prevTarIndex = tarindex + 1;
     }
 }
@@ -366,7 +376,9 @@ MStatus blendPose::compute(const MPlug& plug, MDataBlock& dataBlock) {
     std::vector<MVector> outTrans = computeData(tarTrans, weights, MVector(), MVector(), false);
     std::vector<MVector> outAAs = computeData(tarAAs, weights, MVector(), MVector(), false);
 
-    std::vector<MMatrix> outRotMats, outLogMats, outMats2;
+    auto myname = name();
+
+    std::vector<MMatrix> outRotMats, outLogMats, outLinMats;
     for (const auto& p : outAAs) {
         outRotMats.push_back(expm(p));
     }
@@ -379,8 +391,8 @@ MStatus blendPose::compute(const MPlug& plug, MDataBlock& dataBlock) {
         auto& rm = restMats[i];
         auto& m = outMats[i];
         outLogMats.push_back(compose(sc, sh, r, t) * rm);
-        outMats.push_back(m * rm);
+        outLinMats.push_back(m * rm);
     }
-    setAllData(dataBlock, outMats, outLogMats, outAAs);
+    setAllData(dataBlock, outLinMats, outLogMats, outAAs);
     return MStatus::kSuccess;
 }
