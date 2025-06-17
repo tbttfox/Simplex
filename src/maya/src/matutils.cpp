@@ -27,7 +27,7 @@ MVector make_nice_vec(double a, double b, double c, double t) {
 std::tuple<MVector, MVector, MMatrix, MVector> decompose(
     const MMatrix& mm, MVector& scale, MVector& shear, MMatrix& rot, MVector& tran
 ) {
-    tran = MVector(mm(2, 0), mm(2, 1), mm(2, 2));
+    tran = MVector(mm(3, 0), mm(3, 1), mm(3, 2));
 
     // Now what is left is a 3X3 matrix which is considered to be a combination
     // of rotation, shearing and scaling.
@@ -80,9 +80,9 @@ std::tuple<MVector, MVector, MMatrix, MVector> decompose(
     // S^{-1} * S * R = S^{-1} * M
     // R = S^{-1} * M
     rot = scsh.inverse() * mm;
-    rot(2, 0) = 0.0;
-    rot(2, 1) = 0.0;
-    rot(2, 2) = 0.0;
+    rot(3, 0) = 0.0;
+    rot(3, 1) = 0.0;
+    rot(3, 2) = 0.0;
 
     scale = make_nice_vec(a, b, c, 1.0);
     //           | 1  0  0 |
