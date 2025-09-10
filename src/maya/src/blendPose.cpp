@@ -197,69 +197,28 @@ void blendPose::getAllData(
     std::vector<float>& weights                  // aWeight
 ) {
     MArrayDataHandle origAH = dataBlock.inputArrayValue(aOrig);
-    int prevIdx = 0;
-    for (auto [index, handle] : MArrayInputDataHandleRange(origAH)) {
-        for (; prevIdx < index; ++prevIdx) {
-            restMats.push_back(MMatrix());
-            restAAs.push_back(MVector());
-            restUseMats.push_back(true);
-        }
-        restMats.push_back(handle.child(aOrigMatrix).asMatrix());
-        restAAs.push_back(handle.child(aOrigAxisAngle).asVector());
-        restUseMats.push_back(handle.child(aOrigUseMatrix).asBool());
-        prevIdx = index + 1;
-    }
+    getDenseArrayChildHandleData(origAH, aOrigMatrix, restMats);
+    getDenseArrayChildHandleData(origAH, aOrigAxisAngle, restAAs);
+    getDenseArrayChildHandleData(origAH, aOrigUseMatrix, restUseMats);
+    getDenseArrayHandleData(dataBlock, aWeight, weights);
 
-    MArrayDataHandle weightAH = dataBlock.inputArrayValue(aWeight);
-    prevIdx = 0;
-    for (auto [index, handle] : MArrayInputDataHandleRange(weightAH)) {
-        for (; prevIdx < index; ++prevIdx) {
-            weights.push_back(0.0);
-        }
-        weights.push_back(handle.asDouble());
-        prevIdx = index + 1;
-    }
+    // Lambda to push default values onto tarMats, tarAAs, and tarUseMats
+    auto defaultPusher = [&]() {
+        tarMats.push_back(restMats);
+        tarAAs.push_back(restAAs);
+        tarUseMats.push_back(restUseMats);
+    };
+
+    // Lambda to push actual values onto tarMats, tarAAs, and tarUseMats
+    auto valuePusher = [&](MDataHandle& tarHandle) {
+        MArrayDataHandle ah = tarhandle.child(aTargetPose);
+        getDenseArrayChildHandleData(ah, aTargetPoseMatrix, tarMats.emplace_back());
+        getDenseArrayChildHandleData(ah, aTargetPoseAxisAngle, tarAAs.emplace_back());
+        getDenseArrayChildHandleData(ah, aTargetPoseUseMatrix, tarUseMats.emplace_back());
+    };
 
     MArrayDataHandle targetAH = dataBlock.inputArrayValue(aTarget);
-    int prevTarIndex = 0;
-
-    for (auto [tarindex, tarhandle] : MArrayInputDataHandleRange(targetAH)) {
-        std::vector<MVector> poseAAs;
-        std::vector<MMatrix> poseMats;
-        std::vector<bool> poseUseMats;
-
-        for (; prevTarIndex < tarindex; ++prevTarIndex) {
-            poseMats = restMats;
-            poseAAs = restAAs;
-            poseUseMats.resize(restMats.size());
-        }
-
-        MArrayDataHandle ah = tarhandle.child(aTargetPose);
-        prevIdx = 0;
-        for (auto [index, handle] : MArrayInputDataHandleRange(ah)) {
-            for (; prevIdx < index; ++prevIdx) {
-                poseMats.push_back(MMatrix());
-                poseUseMats.push_back(false);
-                poseAAs.push_back(MVector());
-            }
-            poseMats.push_back(handle.child(aTargetPoseMatrix).asMatrix());
-            poseUseMats.push_back(handle.child(aTargetPoseUseMatrix).asBool());
-            poseAAs.push_back(handle.child(aTargetPoseAxisAngle).asVector());
-
-            prevIdx = index + 1;
-        }
-        for (; prevIdx < restMats.size(); ++prevIdx) {
-            poseMats.push_back(MMatrix());
-            poseUseMats.push_back(false);
-            poseAAs.push_back(MVector());
-        }
-
-        tarAAs.push_back(poseAAs);
-        tarMats.push_back(poseMats);
-        tarUseMats.push_back(poseUseMats);
-
-        prevTarIndex = tarindex + 1;
-    }
+    getDenseArrayMultiHandleData(targetAH, 0, defaultPusher, valuePusher);
 }
 
 void blendPose::setAllData(
