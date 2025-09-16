@@ -16,7 +16,7 @@ def main(srcroot, gitpath):
         try:
             # fmt: off
             v = subprocess.check_output(
-                [gitpath, "-C", srcroot, "describe", "--tags", "--always", "--match", "v[0-9]*", "--abbrev=0"],
+                [gitpath, "describe", "--tags", "--always", "--match", "v[0-9]*", "--abbrev=0"],
                 text=True,
             ).strip()
             # fmt: on
@@ -24,6 +24,7 @@ def main(srcroot, gitpath):
             v = "0.0.1"  # fallback if not in a git repo
 
     print(v)
+
 
 if __name__ == "__main__":
     srcroot = sys.argv[1]
