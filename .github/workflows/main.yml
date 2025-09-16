@@ -41,6 +41,22 @@ jobs:
         with:
           fallback: v0.0.1
 
+      - name: Get pyver macos-latest
+        if: ${{ matrix.os == 'macos-latest' }}
+        shell: bash
+        run: |
+          echo "PY_VER=3.9" >> $GITHUB_ENV
+          echo "PY_VER_FLAT=39" >> $GITHUB_ENV
+          echo "PLAT_TAG=macosx_12_0_arm64" >> $GITHUB_ENV
+
+      - name: Get pyver ubuntu-latest
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        shell: bash
+        run: |
+          echo "PY_VER=3.9" >> $GITHUB_ENV
+          echo "PY_VER_FLAT=39" >> $GITHUB_ENV
+          echo "PLAT_TAG=manylinux_2_17_x86_64" >> $GITHUB_ENV
+
       - name: Get pyver windows-latest
         if: ${{ matrix.os == 'windows-latest' }}
         shell: bash
