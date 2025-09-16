@@ -33,29 +33,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-tags: true
-          fetch-detph: 0
+          fetch-depth: 0
 
       - name: 'Get Previous tag'
         id: previoustag
         uses: "WyriHaximus/github-action-get-previous-tag@v1"
         with:
           fallback: v0.0.1
-
-      - name: Get pyver macos-latest
-        if: ${{ matrix.os == 'macos-latest' }}
-        shell: bash
-        run: |
-          echo "PY_VER=3.9" >> $GITHUB_ENV
-          echo "PY_VER_FLAT=39" >> $GITHUB_ENV
-          echo "PLAT_TAG=macosx_12_0_arm64" >> $GITHUB_ENV
-
-      - name: Get pyver ubuntu-latest
-        if: ${{ matrix.os == 'ubuntu-latest' }}
-        shell: bash
-        run: |
-          echo "PY_VER=3.9" >> $GITHUB_ENV
-          echo "PY_VER_FLAT=39" >> $GITHUB_ENV
-          echo "PLAT_TAG=manylinux_2_17_x86_64" >> $GITHUB_ENV
 
       - name: Get pyver windows-latest
         if: ${{ matrix.os == 'windows-latest' }}
@@ -100,7 +84,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-tags: true
-          fetch-detph: 0
+          fetch-depth: 0
 
       - name: 'Get Previous tag'
         id: previoustag
