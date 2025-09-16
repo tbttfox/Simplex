@@ -8,6 +8,7 @@ project(
       find_program('python', required: true),
       meson.project_source_root() / 'get_version.py',
       meson.project_source_root(),
+      find_program('git', native: true, required: true).full_path(),
     ],
     output : 'version.txt',
   ),
