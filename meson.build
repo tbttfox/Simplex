@@ -1,13 +1,10 @@
 project(
   'Simplex',
   'cpp',
-  meson_version : '>=1.6.0',
+  meson_version : '>=1.7.0',
   version : configure_file(
     capture : true,
-    command : [
-      find_program('git', native: true, required: true),
-      'describe', '--tags', '--always', '--match', 'v[0-9]*', '--abbrev=0'
-    ],
+    command : [find_program('python', required: true), 'get_version.py'],
     output : 'version.txt',
   ),
   default_options: ['cpp_std=c++20'],

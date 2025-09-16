@@ -31,15 +31,15 @@ jobs:
     steps:
       - name: 'Checkout repo'
         uses: actions/checkout@v4
-        with:
-          fetch-tags: true
-          fetch-depth: 0
 
       - name: 'Get Previous tag'
         id: previoustag
         uses: "WyriHaximus/github-action-get-previous-tag@v1"
         with:
           fallback: v0.0.1
+
+      - name: 'Write version.txt'
+        run: echo "${{ steps.previoustag.outputs.tag }}" > version.txt
 
       - name: Get pyver macos-latest
         if: ${{ matrix.os == 'macos-latest' }}
@@ -98,9 +98,6 @@ jobs:
     steps:
       - name: 'Checkout repo'
         uses: actions/checkout@v4
-        with:
-          fetch-tags: true
-          fetch-depth: 0
 
       - name: 'Get Previous tag'
         id: previoustag
