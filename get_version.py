@@ -6,6 +6,12 @@ VERSION_FILE = "version.txt"
 
 
 def main(srcroot, gitpath):
+    """
+    When building a python wheel, the build system copies the entire source tree into a new folder
+    but it doesn't seem to include git tags, or it doesn't check out the git tags, or *something*
+    So I'm writing out a version.txt file that this function will read and pass along to the
+    meson project() function call
+    """
     # If version.txt already exists, use it
     src_file = os.path.join(srcroot, VERSION_FILE)
     if os.path.exists(src_file):
