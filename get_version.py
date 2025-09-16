@@ -16,7 +16,7 @@ def main(srcroot, gitpath):
         try:
             # fmt: off
             v = subprocess.check_output(
-                [gitpath, "describe", "--tags", "--always", "--match", "v[0-9]*", "--abbrev=0"],
+                [gitpath, "-C", srcroot, "describe", "--tags", "--always", "--match", "v[0-9]*", "--abbrev=0"],
                 text=True,
             ).strip()
             # fmt: on

@@ -4,11 +4,17 @@ project(
   meson_version : '>=1.7.0',
   version : configure_file(
     capture : true,
-    command : [
-      find_program('python', required: true),
-      meson.project_source_root() / 'get_version.py',
-      meson.project_source_root(),
-      find_program('git', native: true, required: true).full_path(),
+
+    #command : [
+    #find_program('python', required: true),
+    #meson.project_source_root() / 'get_version.py',
+    #meson.project_source_root(),
+    #find_program('git', native: true, required: true).full_path(),
+    #],
+
+    command: [find_program('git', native: true, required: true),
+      '-C', meson.project_source_root(),
+      'describe', '--tags', '--always', '--match', 'v[0-9]*', '--abbrev=0'
     ],
     output : 'version.txt',
   ),
