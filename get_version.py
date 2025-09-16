@@ -13,15 +13,12 @@ def main(srcroot, gitpath):
             v = f.read().strip()
     else:
         # Otherwise, try git describe
-        try:
-            # fmt: off
-            v = subprocess.check_output(
-                [gitpath, "describe", "--tags", "--always", "--match", "v[0-9]*", "--abbrev=0"],
-                text=True,
-            ).strip()
-            # fmt: on
-        except Exception:
-            v = "0.0.1"  # fallback if not in a git repo
+        # fmt: off
+        v = subprocess.check_output(
+            [gitpath, "describe", "--tags", "--always", "--match", "v[0-9]*", "--abbrev=0"],
+            text=True,
+        ).strip()
+        # fmt: on
 
     print(v)
 
