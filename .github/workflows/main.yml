@@ -31,8 +31,9 @@ jobs:
     steps:
       - name: 'Checkout repo'
         uses: actions/checkout@v5
-        with:
-          fetch-tags: true
+
+      - name: 'ACTUALLY get tags'
+        run: git fetch --force --tags origin
 
       - name: 'Get Previous tag'
         id: previoustag
@@ -100,8 +101,9 @@ jobs:
     steps:
       - name: 'Checkout repo'
         uses: actions/checkout@v5
-        with:
-          fetch-tags: true
+
+      - name: 'ACTUALLY get tags'
+        run: git fetch --force --tags origin
 
       - name: 'Get Previous tag'
         id: previoustag
