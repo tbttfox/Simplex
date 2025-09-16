@@ -5,10 +5,12 @@ import sys
 VERSION_FILE = "version.txt"
 
 
-def main():
+def main(root):
     # If version.txt already exists, use it
-    if os.path.exists(VERSION_FILE):
-        with open(VERSION_FILE) as f:
+    ver_file = os.path.join(root, VERSION_FILE)
+
+    if os.path.exists(ver_file):
+        with open(ver_file) as f:
             v = f.read().strip()
         print(v)
         return
@@ -25,11 +27,12 @@ def main():
         v = "0.0.1"  # fallback if not in a git repo
 
     # Write version.txt so future builds can reuse it
-    with open(VERSION_FILE, "w") as f:
+    with open(ver_file, "w") as f:
         f.write(v)
 
     print(v)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    root = sys.argv[1]
+    sys.exit(main(root))

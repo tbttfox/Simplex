@@ -4,7 +4,7 @@ project(
   meson_version : '>=1.7.0',
   version : configure_file(
     capture : true,
-    command : [find_program('python', required: true), 'get_version.py'],
+    command : [find_program('python', required: true), meson.source_root() / 'get_version.py', meson.source_root()],
     output : 'version.txt',
   ),
   default_options: ['cpp_std=c++20'],
