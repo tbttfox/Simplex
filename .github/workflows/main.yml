@@ -17,70 +17,6 @@ on:
 #       update: 2
 
 jobs:
-  compile_plugin:
-    strategy:
-      matrix:
-        maya: [2022, 2023, 2024, 2025, 2026]
-        os: [macos-13, macos-latest, ubuntu-latest, windows-latest]
-        include: 
-          # Add the maya update versions here
-          - maya: 2022
-            update: 5
-          - maya: 2023
-            update: 3
-          - maya: 2024
-            update: 2
-          - maya: 2025
-            update: 3
-          - maya: 2026
-            update: 2
-
-        # cross-compiling is annoying so just fall back to macos-13
-        exclude: 
-          - os: macos-latest
-            maya: 2022
-          - os: macos-latest
-            maya: 2023
-          - os: macos-13
-            maya: 2024
-          - os: macos-13
-            maya: 2025
-          - os: macos-13
-            maya: 2026
-
-      fail-fast: false
-
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - run: git fetch --force --tags origin
-
-      - name: Get Maya Devkit
-        id: get-devkit
-        uses: blurstudio/mayaModuleActions/getMayaDevkit@v1
-        with:
-          maya: ${{ matrix.maya }}
-          update: ${{ matrix.update }}
-
-      - name: Build Maya
-        uses: blurstudio/mayaModuleActions/mesonBuild@v1
-        with:
-          meson-version: 1.9.0
-          setup-args: >
-            -Dmaya:maya_version=${{ matrix.maya }}
-            -Dmaya:maya_devkit_base=${{ steps.get-devkit.outputs.devkit-path }}
-            -Dmaya_build=true
-            -Dpython_build=false
-            --buildtype release
-            --backend ninja
-          install-args: --skip-subprojects
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ runner.os }}-${{ matrix.maya }}-plugin
-          path: output_Maya${{ matrix.maya }}/*.${{ steps.get-devkit.outputs.plugin-ext }}
-          if-no-files-found: error
 
   compile_python:
     strategy:
@@ -93,8 +29,12 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - run: git fetch --force --tags origin
+      - name: 'Checkout repo'
+        uses: actions/checkout@v4
+        with:
+        fetch-tags: true
+        fetch-detph: 0
+
       - name: 'Get Previous tag'
         id: previoustag
         uses: "WyriHaximus/github-action-get-previous-tag@v1"
@@ -113,8 +53,8 @@ jobs:
         if: ${{ matrix.os == 'ubuntu-latest' }}
         shell: bash
         run: |
-          echo "PY_VER=3.7" >> $GITHUB_ENV
-          echo "PY_VER_FLAT=37" >> $GITHUB_ENV
+          echo "PY_VER=3.9" >> $GITHUB_ENV
+          echo "PY_VER_FLAT=39" >> $GITHUB_ENV
           echo "PLAT_TAG=manylinux_2_17_x86_64" >> $GITHUB_ENV
 
       - name: Get pyver windows-latest
@@ -130,10 +70,14 @@ jobs:
         with:
           python-version: ${{ env.PY_VER }}
 
-      - name: Build Wheel
+      - name: Install pip packages
         shell: bash
         run: |
           python -m pip install -U build wheel
+
+      - name: Build Wheel
+        shell: bash
+        run: |
           python -m build --wheel
           for PY_WHEEL in dist/*.whl
           do
@@ -149,11 +93,15 @@ jobs:
 
   upload_release:
     name: Upload release
-    needs: [compile_plugin, compile_python]
+    needs: [compile_python]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - run: git fetch --force --tags origin
+      - name: 'Checkout repo'
+        uses: actions/checkout@v4
+        with:
+        fetch-tags: true
+        fetch-detph: 0
+
       - name: 'Get Previous tag'
         id: previoustag
         uses: "WyriHaximus/github-action-get-previous-tag@v1"
