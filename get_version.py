@@ -28,5 +28,4 @@ def main(srcroot):
 
 if __name__ == "__main__":
     srcroot = sys.argv[1]
-    buildroot = sys.argv[2]
     sys.exit(main(srcroot))
