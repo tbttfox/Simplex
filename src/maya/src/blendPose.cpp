@@ -11,6 +11,7 @@
 #include <maya/MQuaternion.h>
 #include <maya/MVector.h>
 
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <numbers>
@@ -200,7 +201,9 @@ void blendPose::getAllData(
     getDenseArrayChildHandleData(origAH, aOrigMatrix, restMats);
     getDenseArrayChildHandleData(origAH, aOrigAxisAngle, restAAs);
     getDenseArrayChildHandleData(origAH, aOrigUseMatrix, restUseMats);
-    getDenseArrayHandleData(dataBlock, aWeight, weights);
+    // aWeight is a double attribute, and asFloat() doesn't convert a double handle
+    auto weightGetter = [](const MDataHandle& h) { return static_cast<float>(h.asDouble()); };
+    getDenseArrayHandleData(dataBlock, aWeight, weights, 0, weightGetter);
 
     // Lambda to push default values onto tarMats, tarAAs, and tarUseMats
     auto defaultPusher = [&]() {
@@ -210,8 +213,8 @@ void blendPose::getAllData(
     };
 
     // Lambda to push actual values onto tarMats, tarAAs, and tarUseMats
-    auto valuePusher = [&](MDataHandle& tarHandle) {
-        MArrayDataHandle ah = tarhandle.child(aTargetPose);
+    auto valuePusher = [&](unsigned int index, MDataHandle& tarHandle) {
+        MArrayDataHandle ah(tarHandle.child(aTargetPose));
         getDenseArrayChildHandleData(ah, aTargetPoseMatrix, tarMats.emplace_back());
         getDenseArrayChildHandleData(ah, aTargetPoseAxisAngle, tarAAs.emplace_back());
         getDenseArrayChildHandleData(ah, aTargetPoseUseMatrix, tarUseMats.emplace_back());
@@ -244,7 +247,9 @@ std::vector<T> blendPose::computeData(
     ret.resize(targets[0].size(), zero);
     float allweight = 0.0f;
 
-    for (size_t poseIdx = 0; poseIdx < weights.size(); ++poseIdx) {
+    // Weights and targets are separate sparse arrays, so their dense sizes can differ
+    size_t poseCount = std::min(weights.size(), targets.size());
+    for (size_t poseIdx = 0; poseIdx < poseCount; ++poseIdx) {
         float& weight = weights[poseIdx];
         if (fabs(weight) < 1e-12) {
             continue;
