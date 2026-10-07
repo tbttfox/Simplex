@@ -11,10 +11,7 @@ logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
-sys.dont_write_bytecode = True
-
-
-def install_numpy(pyexe, target):
+def pip_install(pyexe: str | Path, target: str | Path, modules: list[str]):
     """Install numpy to a particular folder
 
     Arguments:
@@ -26,7 +23,12 @@ def install_numpy(pyexe, target):
     """
     import subprocess
 
-    cmd = [str(pyexe), "-m", "pip", "install", "--target", str(target), "numpy"]
+    if isinstance(modules, str):
+        modules = [modules]
+
+    cmd = [str(pyexe), "-m", "pip", "install", "--target", str(target)] + modules
+    print("Running Pip Install Command:")
+    print('>>>' + " ".join(cmd))
     proc = subprocess.run(
         cmd,
         stdout=subprocess.PIPE,
@@ -39,46 +41,16 @@ def install_numpy(pyexe, target):
         logging.critical(proc.stdout)
         logging.critical("\n\n")
         cmds.confirmDialog(
-            title="Simplex Install Error",
-            message="Numpy install failed",
+            title="Pip Install Error",
+            message="Pip install failed",
             button=["OK"],
         )
         raise subprocess.CalledProcessError(proc.returncode, cmd, output=proc.stdout)
 
 
-def install_qtpy(pyexe, target):
-    """Install Qt.py to a particular folder
-
-    Arguments:
-        pyexe (str|Path): A path to the current python executable
-        target (str|Path): The folder to install to
-
-    Raises:
-        CalledProcessError: If the pip command fails
-    """
-    import subprocess
-
-    cmd = [str(pyexe), "-m", "pip", "install", "--target", str(target), "Qt.py"]
-    proc = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-
-    if proc.returncode != 0:
-        logging.critical("\n\n")
-        logging.critical(proc.stdout)
-        logging.critical("\n\n")
-        cmds.confirmDialog(
-            title="Qt.py Install Error",
-            message="Qt.py install failed",
-            button=["OK"],
-        )
-        raise subprocess.CalledProcessError(proc.returncode, cmd, output=proc.stdout)
-
-
-def get_latest_git_release(user, repo, asset_regex, out_path):
+def get_latest_git_release(
+    user: str, repo: str, asset_regex: str, out_path: str | Path
+) -> Path:
     """Get the latest github release from a particular user/repo and download
     it to a specified path
 
@@ -113,7 +85,7 @@ def get_latest_git_release(user, repo, asset_regex, out_path):
         asset_names = "\n".join([a["name"] for a in assets])
         msg = f"regex: {asset_regex}\nnames:\n{asset_names}"
         cmds.confirmDialog(
-            title="Simplex Install Error",
+            title="Install Error",
             message="Release Download Failed",
             button=["OK"],
         )
@@ -125,14 +97,14 @@ def get_latest_git_release(user, repo, asset_regex, out_path):
     out_path = Path(out_path)
     outFolder = out_path.parent
     outFolder.mkdir(exist_ok=True)
-    logger.info("Downloading latest simplex")
+    logger.info("Downloading latest")
     logger.info(f"from: {download_url}")
     logger.info(f"to: {out_path}")
     path, _headers = urllib.request.urlretrieve(download_url, filename=out_path)
     return Path(path)
 
 
-def get_mayapy_path():
+def get_mayapy_path() -> Path:
     """Get the path to the mayapy executable"""
     binFolder = Path(sys.executable).parent
     if sys.platform == "win32":
@@ -142,7 +114,7 @@ def get_mayapy_path():
     elif sys.platform == "linux":
         return binFolder / "mayapy"
     cmds.confirmDialog(
-        title="Simplex Install Error",
+        title="Module Install Error",
         message=f"Unsupported Platform: {sys.platform}",
         button=["OK"],
     )
@@ -150,8 +122,8 @@ def get_mayapy_path():
     raise RuntimeError(f"Current platform is unsupported: {sys.platform}")
 
 
-def get_numpy_simplex_target(mod_folder):
-    """Get the target path for the numpy simplex install"""
+def get_pip_install_path(mod_folder: Path, name: str) -> Path:
+    """Get the target path for any pip installs"""
 
     if sys.platform == "win32":
         platform = "win64"
@@ -161,80 +133,93 @@ def get_numpy_simplex_target(mod_folder):
         platform = "linux"
     else:
         cmds.confirmDialog(
-            title="Simplex Install Error",
+            title=f"{name.capitalize()} Install Error",
             message=f"Unsupported Platform: {sys.platform}",
             button=["OK"],
         )
         raise RuntimeError(f"Current platform is unsupported: {sys.platform}")
 
     year = cmds.about(majorVersion=True)
-    nppath = mod_folder / "simplex" / f"{platform}-{year}" / "pyModules"
+    nppath = mod_folder / name / f"{platform}-{year}" / "pyModules"
     return nppath
 
 
-def onMayaDroppedPythonFile(_obj):
-    """This function will get run when you drag/drop this python script onto maya"""
+def install_module(
+    orgname: str, reponame: str, toolname: str, pip_reqs: list[tuple[str, str]]
+):
+    """Install a module from github (with some optional pip requirements) from inside maya
+
+    Args:
+        orgname (str): The organization name of the module you want
+        reponame (str): The repository name of the module you want
+        toolname (str): The tool name of the module you want
+        pip_reqs (list[tuple[str, str]]):  A list of pairs of (pip-install-name, import-name)
+    """
+    sys.dont_write_bytecode = True
     try:
         # Ensure that people will report a full error
         cmds.optionVar(intValue=("stackTraceIsOn", 1))
         mel.eval('synchronizeScriptEditorOption(1, "StackTraceMenuItem")')
 
         mod_folder = Path(cmds.internalVar(userAppDir=True)) / "modules"
-        modfile = mod_folder / "simplex.mod"
-        simplex_zip = mod_folder / "simplex.zip"
-        moddir = mod_folder / "simplex"
+        modfile = mod_folder / f"{toolname}.mod"
+        module_zip = mod_folder / f"{toolname}.zip"
+        moddir = mod_folder / toolname
         if modfile.is_file() != moddir.is_dir():
-            msg = f"Simplex module is partially installed.\nPlease delete {modfile} and {moddir} and try again"
+            msg = f"{toolname.capitalize()} module is partially installed.\nPlease delete {modfile} and {moddir} and try again"
             cmds.confirmDialog(
-                title="Simplex Install Error",
+                title=f"{toolname.capitalize()} Install Error",
                 message=msg,
                 button=["OK"],
             )
             raise ValueError(msg)
 
-        if simplex_zip.is_file():
-            os.remove(simplex_zip)
+        if module_zip.is_file():
+            os.remove(module_zip)
 
         # This will overwrite the existing install, but will leave any numpy installs alone
-        simplex_zip = get_latest_git_release(
-            "blurstudio",
-            "simplex",
-            r"simplex-v\d+\.\d+\.\d+\.zip",
-            simplex_zip,
+        module_zip = get_latest_git_release(
+            orgname,
+            reponame,
+            rf"{toolname}-v\d+\.\d+\.\d+\.zip",
+            module_zip,
         )
 
-        if not simplex_zip.is_file():
+        if not module_zip.is_file():
             cmds.confirmDialog(
-                title="Simplex Install Error",
+                title="Module Install Error",
                 message="Zip file download failed",
                 button=["OK"],
             )
-            raise RuntimeError("Download of simplex zip failed")
+            raise RuntimeError(f"Download of {toolname} zip failed")
 
-        with zipfile.ZipFile(simplex_zip, "r") as zip_ref:
+        with zipfile.ZipFile(module_zip, "r") as zip_ref:
             members = [m for m in zip_ref.namelist() if m.startswith("modules/")]
             zip_ref.extractall(mod_folder.parent, members=members)
 
-        os.remove(simplex_zip)
+        os.remove(module_zip)
 
-        mayapy = get_mayapy_path()
-        target = get_numpy_simplex_target(mod_folder)
-
-        if importlib.util.find_spec("numpy") is None:
-            install_numpy(mayapy, target)
-        else:
-            logger.info("Numpy is already installed for this version of maya")
-
-        if importlib.util.find_spec("Qt") is None:
-            install_qtpy(mayapy, target)
-        else:
-            logger.info("Qt.py is already installed for this version of maya")
+        if pip_reqs:
+            mayapy = get_mayapy_path()
+            target = get_pip_install_path(mod_folder, toolname)
+            missing = [
+                r for r, spec in pip_reqs if importlib.util.find_spec(spec) is None
+            ]
+            if missing:
+                pip_install(mayapy, target, missing)
 
     finally:
         sys.dont_write_bytecode = False
 
     cmds.confirmDialog(
-        title="Simplex Installed",
-        message="Simplex installation complete",
+        title=f"{toolname.capitalize()} Installed",
+        message=f"{toolname.capitalize()} installation complete",
         button=["OK"],
+    )
+
+
+def onMayaDroppedPythonFile(_obj):
+    """This function will get run when you drag/drop this python script onto maya"""
+    install_module(
+        "blurstudio", 'simplex', 'simplex', [('numpy', 'numpy'), ('Qt.py', 'Qt')]
     )

@@ -448,10 +448,37 @@ class DCC:
             cmds.connectAttr(f"{self.shapeNode}.message", f"{self.op}.shapeMsg")
 
         if self.hasPoseNode:
-            pns = self._getPoseNodes(ops)
-            self.poseNode = pns[0] if pns else self._createPoseNode(self.name)
-            if not cmds.isConnected(f"{self.poseNode}.message", f"{self.op}.poseMsg"):
-                cmds.connectAttr(f"{self.poseNode}.message", f"{self.op}.poseMsg")
+            self.loadPoseNode()
+
+    def loadPoseNode(self, create: bool = True) -> str | None:
+        """Find the blendPose node controlled by this system, and create it if needed
+
+        Parameters
+        ----------
+        create : bool, optional
+            Create the blendPose node if it doesn't exist. Defaults to True
+
+        Returns
+        -------
+        : str or None
+            The blendPose node, or None if it doesn't exist and create is False
+        """
+        if not cmds.attributeQuery("poseMsg", node=self.op, exists=True):
+            # Simplex nodes from before blendPose existed don't have this attribute
+            cmds.addAttr(self.op, longName="poseMsg", attributeType="message")
+
+        pns = self._getPoseNodes([self.op])
+        if pns:
+            self.poseNode = pns[0]
+        elif create:
+            self.poseNode = self._createPoseNode(self.name)
+        else:
+            return None
+
+        self.hasPoseNode = True
+        if not cmds.isConnected(f"{self.poseNode}.message", f"{self.op}.poseMsg"):
+            cmds.connectAttr(f"{self.poseNode}.message", f"{self.op}.poseMsg")
+        return self.poseNode
 
     def getShapeThing(self, shapeName):
         s = cmds.ls(f"{self.shapeNode}.{shapeName}")

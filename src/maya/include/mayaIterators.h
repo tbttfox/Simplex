@@ -261,7 +261,7 @@ struct DefaultHandleValueGetter {
 Dense getter templates
 ************************************/
 
-template <typename T, typename DefaultPusher, typename ValuePusher>
+template <typename DefaultPusher, typename ValuePusher>
 inline void getDenseArrayMultiHandleData(
     MArrayDataHandle& arrayHandle, unsigned int minSize, DefaultPusher defaultPusher,
     ValuePusher valuePusher
@@ -326,7 +326,7 @@ inline void getDenseArrayChildHandleData(
 /************************************
 Sparse getter templates
 ************************************/
-template <typename T, typename ValuePusher>
+template <typename ValuePusher>
 inline void getSparseArrayMultiHandleData(MArrayDataHandle& arrayHandle, ValuePusher valuePusher) {
     for (auto [index, handle] : MArrayInputDataHandleRange(arrayHandle)) {
         valuePusher(handle);

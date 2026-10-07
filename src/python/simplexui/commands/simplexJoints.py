@@ -1,0 +1,340 @@
+# Copyright 2016, Blur Studio
+#
+# This file is part of Simplex.
+#
+# Simplex is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Simplex is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with Simplex.  If not, see <http://www.gnu.org/licenses/>.
+"""Convert a simplex system of blendshapes into joint poses plus residual blendshapes
+
+The joint poses are stored as blendPose parameters (see jointPoses.py), and because
+the blendPose node blends those parameters linearly, they get collapsed into
+corrective deltas the same way the shapes do. So when the simplex solver activates
+a combo, the joints get the combo's corrective pose on top of its sliders' poses.
+
+The residual shapes are what's left over after the joints are skinned. They are
+applied pre-skin, so the full sculpted shapes are un-skinned before being collapsed
+back into deltas.
+
+Traversal shapes are left alone. They keep their original deltas, and get no joint motion
+"""
+
+from __future__ import annotations
+
+import itertools
+import os
+from dataclasses import dataclass, field
+
+import numpy as np
+from pysimplex import PySimplex
+
+from ..items import Simplex
+from .alembicCommon import readSmpx, unflattenFaces
+from .applyCorrectives import buildFullShapes, collapseFullShapes, writeSimplex
+from .jointPoses import (
+    evaluateBlendPose,
+    localMats,
+    poseDeltaParams,
+    skinMatrices,
+    solveJointPoses,
+    unskinVerts,
+    worldMats,
+)
+
+
+@dataclass
+class SimplexJointData:
+    """The joint data that goes along with a simplex system
+
+    Attributes
+    ----------
+    jointNames : [str, ...]
+        The names of the joints
+    jointMats : np.ndarray
+        The (J, 4, 4) rest world matrices
+    parents : [int, ...]
+        The parent index of each joint, or -1
+    lockJoints : [int, ...]
+        The indices of the joints that aren't driven by the system
+    weights : np.ndarray
+        The (N, J) skin weights
+    deltaParams : np.ndarray
+        The (numShapes, J, 4, 3) blendPose delta parameters per simplex shape index
+    rmse : float
+        The root mean squared error of the joint fit
+    """
+
+    jointNames: list[str]
+    jointMats: np.ndarray
+    parents: list[int]
+    lockJoints: list[int]
+    weights: np.ndarray
+    deltaParams: np.ndarray
+    rmse: float = 0.0
+    shapeNames: list[str] = field(default_factory=list)
+
+    @property
+    def drivenJoints(self) -> list[int]:
+        """The indices of the joints driven by the blendPose node"""
+        locked = set(self.lockJoints)
+        return [i for i in range(len(self.jointNames)) if i not in locked]
+
+    @property
+    def restLocal(self) -> np.ndarray:
+        return localMats(self.jointMats, self.parents)
+
+    def evaluate(self, shapeValues: np.ndarray) -> np.ndarray:
+        """Get the world matrices of the joints given the simplex shape values
+
+        Parameters
+        ----------
+        shapeValues : np.ndarray
+            An (S,) array of shape values from the solver,
+            or an (F, S) array to evaluate many at once
+
+        Returns
+        -------
+        : np.ndarray
+            A (J, 4, 4) or (F, J, 4, 4) array of world matrices
+        """
+        local = evaluateBlendPose(self.restLocal, self.deltaParams, shapeValues)
+        return worldMats(local, self.parents)
+
+    def save(self, path: str) -> None:
+        """Save the joint data to a .npz file"""
+        np.savez(
+            path,
+            jointNames=np.array(self.jointNames),
+            jointMats=self.jointMats,
+            parents=np.array(self.parents, dtype=int),
+            lockJoints=np.array(self.lockJoints, dtype=int),
+            weights=self.weights,
+            deltaParams=self.deltaParams,
+            rmse=np.array(self.rmse),
+            shapeNames=np.array(self.shapeNames),
+        )
+
+    @classmethod
+    def load(cls, path: str) -> SimplexJointData:
+        """Load the joint data from a .npz file"""
+        with np.load(path) as data:
+            return cls(
+                jointNames=[str(i) for i in data["jointNames"]],
+                jointMats=data["jointMats"],
+                parents=[int(i) for i in data["parents"]],
+                lockJoints=[int(i) for i in data["lockJoints"]],
+                weights=data["weights"],
+                deltaParams=data["deltaParams"],
+                rmse=float(data["rmse"]),
+                shapeNames=[str(i) for i in data["shapeNames"]],
+            )
+
+
+def _checkLockedHierarchy(parents: list[int], lockJoints: list[int]) -> None:
+    """Locked joints can't move, so they can't be children of driven joints"""
+    locked = set(lockJoints)
+    for j in locked:
+        p = parents[j]
+        while p >= 0:
+            if p not in locked:
+                raise ValueError(
+                    f"Locked joint {j} is a descendant of driven joint {p}. "
+                    "Lock its ancestors too, or unlock it"
+                )
+            p = parents[p]
+
+
+def jointShapes(simplex: Simplex) -> list:
+    """Get the shapes that will get joint poses.
+    These are the non-rest shapes of the sliders and combos
+    """
+    shapes = []
+    for item in itertools.chain(simplex.sliders, simplex.combos):
+        for pair in item.prog.pairs:
+            if not pair.shape.isRest:
+                shapes.append(pair.shape)
+    return shapes
+
+
+def jointifySimplex(
+    simplex: Simplex,
+    solver: PySimplex,
+    deltaShapes: np.ndarray,
+    restPts: np.ndarray,
+    faces: list[list[int]],
+    jointMats: np.ndarray,
+    jointNames: list[str] | None = None,
+    parents: list[int] | None = None,
+    lockJoints: list[int] | None = None,
+    pBar=None,
+    **solveKwargs,
+):
+    """Split a simplex system into joint poses, skin weights, and residual shapes
+
+    Parameters
+    ----------
+    simplex : Simplex
+        The simplex system
+    solver : PySimplex
+        An instantiated solver for the system
+    deltaShapes : np.ndarray
+        The (numShapes, N, 3) shape deltas in simplex.shapes order
+    restPts : np.ndarray
+        The (N, 3) rest positions
+    faces : [[int, ...], ...]
+        The mesh faces
+    jointMats : np.ndarray
+        The (J, 4, 4) rest world matrices of the joints
+    jointNames : [str, ...], optional
+        The names of the joints. Defaults to "joint_{index}"
+    parents : [int, ...], optional
+        The parent index of each joint, or -1. Defaults to no parents
+    lockJoints : [int, ...], optional
+        The indices of joints that aren't allowed to move, like a head joint
+    pBar : QProgressDialog, optional
+        An optional progress dialog
+    **solveKwargs
+        Passed to jointPoses.solveJointPoses
+
+    Returns
+    -------
+    : np.ndarray
+        The (numShapes, N, 3) residual shapes as absolute points, ready to write to a .smpx
+    : SimplexJointData
+        The joint data
+    """
+    numJoints = len(jointMats)
+    if jointNames is None:
+        jointNames = [f"joint_{i}" for i in range(numJoints)]
+    if parents is None:
+        parents = [-1] * numJoints
+    lockJoints = sorted(set(lockJoints or []))
+    _checkLockedHierarchy(parents, lockJoints)
+
+    shapes = jointShapes(simplex)
+    ptsByShape, vecByShape = buildFullShapes(simplex, shapes, deltaShapes, solver, pBar)
+    targets = np.array([restPts + ptsByShape[s] for s in shapes])
+
+    if pBar is not None:
+        pBar.setLabelText("Solving Joint Poses")
+    print("Solving Joint Poses")
+    poseMats, weights, rmse = solveJointPoses(
+        restPts, targets, jointMats, faces, lockJoints=lockJoints, **solveKwargs
+    )
+    print(f"Joint fit RMSE: {rmse}")
+
+    # Collapse the blendPose parameters into deltas. The parameters are (J, 4, 3)
+    # per shape, so reshape them to look like (4J, 3) points
+    restLocal = localMats(jointMats, parents)
+    fullParams = poseDeltaParams(restLocal, localMats(poseMats, parents))
+    paramsByShape = {s: p.reshape((-1, 3)) for s, p in zip(shapes, fullParams)}
+    noParams = np.zeros((len(simplex.shapes), numJoints * 4, 3))
+    deltaParams = collapseFullShapes(simplex, noParams, paramsByShape, vecByShape, pBar)
+    deltaParams = deltaParams.reshape((len(simplex.shapes), numJoints, 4, 3))
+
+    jointData = SimplexJointData(
+        jointNames=list(jointNames),
+        jointMats=np.asarray(jointMats, dtype=np.float64),
+        parents=list(parents),
+        lockJoints=lockJoints,
+        weights=weights,
+        deltaParams=deltaParams,
+        rmse=rmse,
+        shapeNames=[s.name for s in simplex.shapes],
+    )
+
+    # Un-skin using the poses the rig will actually produce. At the exact shape
+    # activations these match the solved poses, but this guarantees the residuals
+    # are computed against the same thing the blendPose node outputs
+    rigPoses = jointData.evaluate(np.array([vecByShape[s] for s in shapes]))
+    if pBar is not None:
+        pBar.setLabelText("Un-skinning Shapes")
+    print("Un-skinning Shapes")
+    preSkin = unskinVerts(targets, weights, skinMatrices(jointMats, rigPoses))
+
+    newPtsByShape = {s: p - restPts for s, p in zip(shapes, preSkin)}
+    newShapePts = collapseFullShapes(
+        simplex, deltaShapes, newPtsByShape, vecByShape, pBar
+    )
+    return newShapePts + restPts[None, ...], jointData
+
+
+def jointifySmpx(
+    inPath: str,
+    outPath: str,
+    jointMats: np.ndarray,
+    jointNames: list[str] | None = None,
+    parents: list[int] | None = None,
+    lockJoints: list[int] | None = None,
+    jointDataPath: str | None = None,
+    pBar=None,
+    **solveKwargs,
+) -> SimplexJointData:
+    """Read a .smpx file, split it into joints and residual shapes, and write the results
+
+    Parameters
+    ----------
+    inPath : str
+        The input .smpx file
+    outPath : str
+        The output .smpx file containing the residual shapes
+    jointMats : np.ndarray
+        The (J, 4, 4) rest world matrices of the joints
+    jointNames : [str, ...], optional
+        The names of the joints
+    parents : [int, ...], optional
+        The parent index of each joint, or -1. Defaults to no parents
+    lockJoints : [int, ...], optional
+        The indices of joints that aren't allowed to move, like a head joint
+    jointDataPath : str, optional
+        Where to write the joint data. Defaults to the outPath with a .npz extension
+    pBar : QProgressDialog, optional
+        An optional progress dialog
+    **solveKwargs
+        Passed to jointPoses.solveJointPoses
+
+    Returns
+    -------
+    : SimplexJointData
+        The joint data
+    """
+    if not os.path.isfile(str(inPath)):
+        raise OSError("File does not exist: " + str(inPath))
+
+    jsString, counts, verts, flatFaces, _, _ = readSmpx(inPath)
+    simplex = Simplex.buildSystemFromJsonString(jsString, None, forceDummy=True)
+    solver = PySimplex(jsString)
+
+    restIdx = simplex.shapes.index(simplex.restShape)
+    restPts = verts[restIdx]
+    deltaShapes = verts - restPts[None, ...]
+    faces = unflattenFaces(flatFaces, counts)
+
+    newShapePts, jointData = jointifySimplex(
+        simplex,
+        solver,
+        deltaShapes,
+        restPts,
+        faces,
+        jointMats,
+        jointNames=jointNames,
+        parents=parents,
+        lockJoints=lockJoints,
+        pBar=pBar,
+        **solveKwargs,
+    )
+
+    writeSimplex(inPath, outPath, newShapePts, name=simplex.name, pBar=pBar)
+    if jointDataPath is None:
+        jointDataPath = os.path.splitext(outPath)[0] + ".npz"
+    jointData.save(jointDataPath)
+    return jointData
