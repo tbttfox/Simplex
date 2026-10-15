@@ -251,6 +251,59 @@ def bindSkin(
     return skin
 
 
+def buildJoints(jointData: SimplexJointData) -> list[str]:
+    """Build the joint hierarchy stored in the joint data, in its rest pose
+
+    Parameters
+    ----------
+    jointData : SimplexJointData
+        The joint data to build the joints from
+
+    Returns
+    -------
+    : [str, ...]
+        The full paths of the new joints, in the same order as the joint data
+    """
+    existing = [j for j in jointData.jointNames if cmds.objExists(j)]
+    if existing:
+        raise ValueError(f"Joints already exist: {existing}")
+
+    # Build parents before their children
+    parents = jointData.parents
+    order: list[int] = []
+    done: set[int] = set()
+
+    def visit(i: int) -> None:
+        if i in done:
+            return
+        if parents[i] >= 0:
+            visit(parents[i])
+        done.add(i)
+        order.append(i)
+
+    for i in range(len(parents)):
+        visit(i)
+
+    nodes: list[str] = [""] * len(parents)
+    for i in order:
+        cmds.select(clear=True)
+        joint = cmds.joint(name=jointData.jointNames[i])
+        if parents[i] >= 0:
+            joint = cmds.parent(joint, nodes[parents[i]])[0]
+            local = jointData.jointMats[i] @ np.linalg.inv(
+                jointData.jointMats[parents[i]]
+            )
+        else:
+            local = jointData.jointMats[i]
+        # The world matrices are plain products of the locals, so parent scale
+        # has to propagate like a regular transform
+        cmds.setAttr(f"{joint}.segmentScaleCompensate", False)
+        cmds.xform(joint, matrix=local.flatten().tolist(), objectSpace=True)
+        nodes[i] = cmds.ls(joint, long=True)[0]
+    cmds.select(clear=True)
+    return nodes
+
+
 def buildJointRig(
     smpxPath: str,
     jointData: SimplexJointData,
@@ -266,7 +319,8 @@ def buildJointRig(
         The .smpx file containing the residual shapes
     jointData : SimplexJointData
         The joint data that goes along with the .smpx file.
-        The joints must exist in the scene, in their rest pose
+        If none of the joints exist in the scene, they are built from the joint data.
+        Otherwise they must all exist, in their rest pose
     mesh : str, optional
         The mesh to build the system on. Defaults to building a new one from the .smpx
     name : str, optional
@@ -280,7 +334,9 @@ def buildJointRig(
         The new simplex system
     """
     missing = [j for j in jointData.jointNames if not cmds.objExists(j)]
-    if missing:
+    if len(missing) == len(jointData.jointNames):
+        buildJoints(jointData)
+    elif missing:
         raise ValueError(f"Missing joints: {missing}")
     if mesh is not None and cmds.ls(cmds.listHistory(mesh), type="skinCluster"):
         raise ValueError(f"{mesh} is already skinned")
