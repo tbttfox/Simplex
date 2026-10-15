@@ -6,7 +6,7 @@ REM use VS for the debugger, otherwise use NINJA
 REM Until I figure out how to debug using nvim
 SET BACKEND=vs
 REM "debug" "debugoptimized" "release"
-SET BUILDTYPE=debug
+SET BUILDTYPE=debugoptimized
 SET BUILDDIR=mayabuild_%BUILDTYPE%_%MAYA_VERSION%_%BACKEND%
 
 if not exist %BUILDDIR%\ (
