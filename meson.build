@@ -16,23 +16,17 @@ project(
 )
 
 maya_build = get_option('maya_build')
-python_build = get_option('python_build')
-imath_bridge_build = get_option('imath_bridge_build')
+python_build = get_option('python_build')  # Wheel/script build handled in src/python
 
-if not maya_build and not python_build and not imath_bridge_build
+if not maya_build and not python_build
   error('No builds requested')
 endif
 
 conf_data = configuration_data()
 conf_data.set('VCS_TAG', meson.project_version())
 
-
-if maya_build or imath_bridge_build
+if maya_build
   subproject('maya')
-endif
-
-if imath_bridge_build
-  subdir('src/imathbridge')
 endif
 
 if maya_build or python_build
@@ -45,6 +39,3 @@ if maya_build or python_build
     subdir('src/python')
   endif
 endif
-
-
-
