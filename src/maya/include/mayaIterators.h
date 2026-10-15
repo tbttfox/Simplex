@@ -44,6 +44,7 @@ All as one loop to a struct. Probably a little faster
 #include <maya/MAngle.h>
 #include <maya/MTime.h>
 
+#include <algorithm>
 #include <iterator>
 #include <type_traits>
 #include <unordered_map>
@@ -286,6 +287,8 @@ inline void getDenseArrayHandleData(
     MArrayDataHandle& arrayHandle, std::vector<T>& ret, unsigned int minSize = 0,
     ValueGetter valueGetter = ValueGetter()
 ) {
+    // Sparse arrays can be longer than elementCount(), but this covers the common dense case
+    ret.reserve(ret.size() + std::max(arrayHandle.elementCount(), minSize));
     auto defaultPusher = [&ret]() { ret.emplace_back(); };
     auto valuePusher = [&ret, &valueGetter](unsigned int index, MDataHandle& handle) {
         ret.push_back(valueGetter(handle));

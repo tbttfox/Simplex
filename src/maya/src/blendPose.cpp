@@ -205,8 +205,19 @@ void blendPose::getAllData(
     auto weightGetter = [](const MDataHandle& h) { return static_cast<float>(h.asDouble()); };
     getDenseArrayHandleData(dataBlock, aWeight, weights, 0, weightGetter);
 
+    // Only weighted targets get read. The rest are left as empty lists that compute() skips
+    auto isWeighted = [&](size_t index) {
+        return index < weights.size() && fabs(weights[index]) >= 1e-12;
+    };
+
     // Lambda to push default values onto tarMats, tarAAs, and tarUseMats
     auto defaultPusher = [&]() {
+        if (!isWeighted(tarMats.size())) {
+            tarMats.emplace_back();
+            tarAAs.emplace_back();
+            tarUseMats.emplace_back();
+            return;
+        }
         tarMats.push_back(restMats);
         tarAAs.push_back(restAAs);
         tarUseMats.push_back(restUseMats);
@@ -214,6 +225,12 @@ void blendPose::getAllData(
 
     // Lambda to push actual values onto tarMats, tarAAs, and tarUseMats
     auto valuePusher = [&](unsigned int index, MDataHandle& tarHandle) {
+        if (!isWeighted(index)) {
+            tarMats.emplace_back();
+            tarAAs.emplace_back();
+            tarUseMats.emplace_back();
+            return;
+        }
         MArrayDataHandle ah(tarHandle.child(aTargetPose));
         getDenseArrayChildHandleData(ah, aTargetPoseMatrix, tarMats.emplace_back());
         getDenseArrayChildHandleData(ah, aTargetPoseAxisAngle, tarAAs.emplace_back());
@@ -230,43 +247,48 @@ void blendPose::setAllData(
 ) {
     MArrayDataHandle outAH = dataBlock.outputArrayValue(aOutput);
     MArrayDataBuilder builder = outAH.builder();
-    for (int key = 0; key < outLinMats.size(); ++key) {
+    for (unsigned int key = 0; key < outLinMats.size(); ++key) {
         MDataHandle handle = builder.addElement(key);
         handle.child(aOutputAxisAngle).setMVector(outAAs[key]);
         handle.child(aOutputLinearMatrix).setMMatrix(outLinMats[key]);
         handle.child(aOutputLogMatrix).setMMatrix(outLogMats[key]);
     }
+    outAH.set(builder);
+    // Every output element was just computed, so mark them all clean. Otherwise Maya
+    // re-runs compute() once for each connected output plug
+    outAH.setAllClean();
+    dataBlock.setClean(aOutput);
 }
 
 template <typename T>
 std::vector<T> blendPose::computeData(
-    std::vector<std::vector<T>> targets, std::vector<float> weights, T zero, T offset,
-    bool useOffset
+    const std::vector<std::vector<T>>& targets, const std::vector<float>& weights, size_t count,
+    const T& zero, const T& offset, bool useOffset
 ) {
-    std::vector<T> ret;
-    ret.resize(targets[0].size(), zero);
+    std::vector<T> ret(count, zero);
     float allweight = 0.0f;
 
     // Weights and targets are separate sparse arrays, so their dense sizes can differ
     size_t poseCount = std::min(weights.size(), targets.size());
     for (size_t poseIdx = 0; poseIdx < poseCount; ++poseIdx) {
-        float& weight = weights[poseIdx];
+        float weight = weights[poseIdx];
         if (fabs(weight) < 1e-12) {
             continue;
         }
         allweight += fabs(weight);
-        for (size_t matIdx = 0; matIdx < targets[poseIdx].size(); ++matIdx) {
-            auto& mat = targets[poseIdx][matIdx];
+        const auto& pose = targets[poseIdx];
+        size_t matCount = std::min(count, pose.size());
+        for (size_t matIdx = 0; matIdx < matCount; ++matIdx) {
             if (useOffset) {
-                mat -= offset;
+                ret[matIdx] += weight * (pose[matIdx] - offset);
+            } else {
+                ret[matIdx] += weight * pose[matIdx];
             }
-            ret[matIdx] += weight * mat;
         }
     }
 
     if (allweight == 0.0) {
-        ret.resize(0);
-        ret.resize(targets[0].size(), offset);
+        ret.assign(count, offset);
         return ret;
     }
     if (useOffset) {
@@ -305,44 +327,52 @@ MStatus blendPose::compute(const MPlug& plug, MDataBlock& dataBlock) {
     decomposeMatList(restMats, restRawAAs, restUseMats, restScale, restShear, restAAs, restTran);
 
     std::vector<MMatrix> restInvMats;
+    restInvMats.reserve(restMats.size());
     for (const auto& m : restMats) {
         restInvMats.push_back(m.inverse());
     }
 
-    std::vector<std::vector<MMatrix>> tarLocalMats;
-    std::vector<std::vector<MVector>> tarTrans, tarScales, tarShears, tarAAs;
+    // Zero-weight targets are left as empty lists. computeData skips them anyway
+    size_t poseCount = tarPoses.size();
+    std::vector<std::vector<MMatrix>> tarLocalMats(poseCount);
+    std::vector<std::vector<MVector>> tarTrans(poseCount), tarScales(poseCount),
+        tarShears(poseCount), tarAAs(poseCount);
 
-    for (size_t i = 0; i < tarPoses.size(); ++i) {
+    for (size_t i = 0; i < poseCount; ++i) {
+        if (i >= weights.size() || fabs(weights[i]) < 1e-12) {
+            continue;
+        }
         auto& tarMats = tarPoses[i];
         auto& tarAAPose = tarAAPoses[i];
         auto& useMats = tarUseMats[i];
-        std::vector<MMatrix> tarInRestMats;
+        auto& tarInRestMats = tarLocalMats[i];
         tarInRestMats.reserve(tarMats.size());
         for (size_t j = 0; j < tarMats.size(); ++j) {
             tarInRestMats.push_back(tarMats[j] * restInvMats[j]);
         }
 
-        std::vector<MVector> tarScale, tarShear, tarAA, tarTran;
-        decomposeMatList(tarInRestMats, tarAAPose, useMats, tarScale, tarShear, tarAA, tarTran);
-        tarLocalMats.push_back(tarInRestMats);
-        tarTrans.push_back(tarTran);
-        tarScales.push_back(tarScale);
-        tarShears.push_back(tarShear);
-        tarAAs.push_back(tarAA);
+        decomposeMatList(
+            tarInRestMats, tarAAPose, useMats, tarScales[i], tarShears[i], tarAAs[i], tarTrans[i]
+        );
     }
 
+    size_t count = restMats.size();
     MMatrix zeroMat;
     zeroMat *= 0;
     MVector oneVec(1, 1, 1);
-    std::vector<MMatrix> outMats = computeData(tarLocalMats, weights, zeroMat, MMatrix(), true);
-    std::vector<MVector> outScales = computeData(tarScales, weights, MVector(), oneVec, true);
-    std::vector<MVector> outShears = computeData(tarShears, weights, MVector(), MVector(), false);
-    std::vector<MVector> outTrans = computeData(tarTrans, weights, MVector(), MVector(), false);
-    std::vector<MVector> outAAs = computeData(tarAAs, weights, MVector(), MVector(), false);
-
-    auto myname = name();
+    std::vector<MMatrix> outMats =
+        computeData(tarLocalMats, weights, count, zeroMat, MMatrix(), true);
+    std::vector<MVector> outScales = computeData(tarScales, weights, count, MVector(), oneVec, true);
+    std::vector<MVector> outShears =
+        computeData(tarShears, weights, count, MVector(), MVector(), false);
+    std::vector<MVector> outTrans =
+        computeData(tarTrans, weights, count, MVector(), MVector(), false);
+    std::vector<MVector> outAAs = computeData(tarAAs, weights, count, MVector(), MVector(), false);
 
     std::vector<MMatrix> outRotMats, outLogMats, outLinMats;
+    outRotMats.reserve(count);
+    outLogMats.reserve(count);
+    outLinMats.reserve(count);
     for (const auto& p : outAAs) {
         outRotMats.push_back(expm(p));
     }

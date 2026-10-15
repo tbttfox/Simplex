@@ -55,8 +55,8 @@ class blendPose : public MPxNode {
 
     template <typename T>
     std::vector<T> computeData(
-        std::vector<std::vector<T>> targets, std::vector<float> weights, T zero, T offset,
-        bool useOffset
+        const std::vector<std::vector<T>>& targets, const std::vector<float>& weights,
+        size_t count, const T& zero, const T& offset, bool useOffset
     );
 
     void decomposeMatList(

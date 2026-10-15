@@ -120,7 +120,7 @@ MMatrix compose(
 MVector logm(const MMatrix& m) {
     MMatrix S = (m - m.transpose()) * 0.5;
     MVector ret(S(1, 0), S(2, 0), S(2, 1));
-    float theta = acos((m(0, 0) + m(1, 1) + m(2, 2) - 1) / 2);
+    double theta = acos((m(0, 0) + m(1, 1) + m(2, 2) - 1) / 2);
     if (fabs(theta) > 1e-12) {
         ret *= theta / sin(theta);
     }
