@@ -53,9 +53,6 @@ $RECYCLE.BIN/
 **/rapidjson-*/
 subprojects/packagecache/
 
-# Reference data
-REFERENCE/
-
 # python wheel dist folder
 dist/
 

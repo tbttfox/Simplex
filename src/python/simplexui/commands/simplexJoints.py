@@ -30,6 +30,7 @@ Traversal shapes are left alone. They keep their original deltas, and get no joi
 
 from __future__ import annotations
 
+import datetime
 import itertools
 import os
 from dataclasses import dataclass, field
@@ -41,12 +42,19 @@ from ..items import Simplex
 from .alembicCommon import readSmpx, unflattenFaces
 from .applyCorrectives import buildFullShapes, collapseFullShapes, writeSimplex
 from .jointPoses import (
+    SolveJob,
     evaluateBlendPose,
     localMats,
+    nearestJointWeights,
+    paramsToDeltas,
     poseDeltaParams,
     skinMatrices,
+    skinVerts,
     solveJointPoses,
+    solveLayeredPoses,
+    solveSkinWeights,
     unskinVerts,
+    unwrapAxisAngle,
     worldMats,
 )
 
@@ -232,10 +240,49 @@ def jointifySimplex(
     )
     print(f"Joint fit RMSE: {rmse}")
 
+    return _finishJointify(
+        simplex,
+        deltaShapes,
+        restPts,
+        jointMats,
+        jointNames,
+        parents,
+        lockJoints,
+        shapes,
+        targets,
+        vecByShape,
+        poseMats,
+        weights,
+        rmse,
+        pBar,
+    )
+
+
+def _finishJointify(
+    simplex: Simplex,
+    deltaShapes: np.ndarray,
+    restPts: np.ndarray,
+    jointMats: np.ndarray,
+    jointNames: list[str],
+    parents: list[int],
+    lockJoints: list[int],
+    shapes: list,
+    targets: np.ndarray,
+    vecByShape: dict,
+    poseMats: np.ndarray,
+    weights: np.ndarray,
+    rmse: float,
+    pBar=None,
+    fullParams: np.ndarray | None = None,
+):
+    """Collapse the solved poses into blendPose deltas, and build the residual shapes"""
+    numJoints = len(jointMats)
+
     # Collapse the blendPose parameters into deltas. The parameters are (J, 4, 3)
     # per shape, so reshape them to look like (4J, 3) points
-    restLocal = localMats(jointMats, parents)
-    fullParams = poseDeltaParams(restLocal, localMats(poseMats, parents))
+    if fullParams is None:
+        restLocal = localMats(jointMats, parents)
+        fullParams = poseDeltaParams(restLocal, localMats(poseMats, parents))
     paramsByShape = {s: p.reshape((-1, 3)) for s, p in zip(shapes, fullParams)}
     noParams = np.zeros((len(simplex.shapes), numJoints * 4, 3))
     deltaParams = collapseFullShapes(simplex, noParams, paramsByShape, vecByShape, pBar)
@@ -268,6 +315,251 @@ def jointifySimplex(
     return newShapePts + restPts[None, ...], jointData
 
 
+def _shapeDepths(simplex: Simplex) -> dict:
+    """Get the combo depth of each shape. Slider shapes are 0"""
+    depths = {}
+    for slider in simplex.sliders:
+        for pair in slider.prog.pairs:
+            depths[pair.shape] = 0
+    for combo in simplex.combos:
+        for pair in combo.prog.pairs:
+            depths[pair.shape] = len(combo.pairs)
+    return depths
+
+
+def solveSimplexPoses(
+    simplex: Simplex,
+    shapes: list,
+    targets: np.ndarray,
+    vecByShape: dict,
+    restPts: np.ndarray,
+    jointMats: np.ndarray,
+    parents: list[int],
+    weights: np.ndarray,
+    jobs: list[SolveJob],
+    shapeJobs: list[list[int]],
+    lockJoints: list[int],
+    **solveKwargs,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Solve the layered joint poses for the shapes of a simplex system
+
+    The shapes are solved in order of their combo depth. Each combo starts from the
+    pose that the rig would give it without any correction of its own
+
+    Returns
+    -------
+    : np.ndarray
+        The (len(shapes), J, 4, 4) world matrices of the joints for each shape
+    : np.ndarray
+        The (len(shapes), J, 4, 3) blendPose parameters for each shape. Their
+        rotations are unwrapped to be as close as possible to the rotations the
+        rig would give each shape without any correction of its own
+    """
+    restLocal = localMats(jointMats, parents)
+    indexByShape = {s: i for i, s in enumerate(simplex.shapes)}
+    deltaParams = np.zeros((len(simplex.shapes), len(jointMats), 4, 3))
+    poseMats = np.empty((len(shapes),) + jointMats.shape)
+    fullParams = np.empty((len(shapes), len(jointMats), 4, 3))
+
+    depths = _shapeDepths(simplex)
+    byDepth: dict[int, list[int]] = {}
+    for i, shape in enumerate(shapes):
+        byDepth.setdefault(depths[shape], []).append(i)
+
+    for depth in sorted(byDepth):
+        idxs = byDepth[depth]
+        now = datetime.datetime.now().time()
+        print(f"{now}: Solving {len(idxs)} shapes at depth {depth}")
+        vecs = np.array([vecByShape[shapes[i]] for i in idxs])
+        base = np.tensordot(vecs, deltaParams, axes=1)
+        poses = solveLayeredPoses(
+            restPts,
+            targets[idxs],
+            jointMats,
+            parents,
+            weights,
+            jobs,
+            [shapeJobs[i] for i in idxs],
+            initLocal=paramsToDeltas(base) @ restLocal,
+            lockJoints=lockJoints,
+            **solveKwargs,
+        )
+        poseMats[idxs] = poses
+        full = poseDeltaParams(restLocal, localMats(poses, parents))
+        full[..., 2, :] = unwrapAxisAngle(full[..., 2, :], base[..., 2, :])
+        fullParams[idxs] = full
+        for i, f, b in zip(idxs, full, base):
+            deltaParams[indexByShape[shapes[i]]] = f - b
+    return poseMats, fullParams
+
+
+def _fitRmse(
+    restPts: np.ndarray,
+    targets: np.ndarray,
+    weights: np.ndarray,
+    jointMats: np.ndarray,
+    poseMats: np.ndarray,
+) -> float:
+    """Get the root mean squared error of the skinned poses against the targets"""
+    total = 0.0
+    for tgt, pose in zip(targets, poseMats):
+        fit = skinVerts(restPts, weights, skinMatrices(jointMats, pose[None]))[0]
+        total += ((fit - tgt) ** 2).sum()
+    return float(np.sqrt(total / (len(targets) * len(restPts))))
+
+
+def jointifySimplexLayered(
+    simplex: Simplex,
+    solver: PySimplex,
+    deltaShapes: np.ndarray,
+    restPts: np.ndarray,
+    faces: list[list[int]],
+    jointMats: np.ndarray,
+    jobs: list[SolveJob],
+    shapeJobs=None,
+    jointNames: list[str] | None = None,
+    parents: list[int] | None = None,
+    lockJoints: list[int] | None = None,
+    weights: np.ndarray | None = None,
+    weightRounds: int = 2,
+    weightKwargs: dict | None = None,
+    pBar=None,
+    **solveKwargs,
+):
+    """Split a simplex system into joint poses, skin weights, and residual shapes
+    using a layered solve with fixed skin weights. See `jointPoses.solveLayeredPoses`
+
+    The weights and poses are solved in alternating rounds. First the poses are
+    solved with the current weights, then Dem Bones solves new weights for those
+    poses, and repeat. The final round is always a pose solve.
+
+    Parameters
+    ----------
+    simplex : Simplex
+        The simplex system
+    solver : PySimplex
+        An instantiated solver for the system
+    deltaShapes : np.ndarray
+        The (numShapes, N, 3) shape deltas in simplex.shapes order
+    restPts : np.ndarray
+        The (N, 3) rest positions
+    faces : [[int, ...], ...]
+        The mesh faces
+    jointMats : np.ndarray
+        The (J, 4, 4) rest world matrices of the joints
+    jobs : [SolveJob, ...]
+        The solve jobs
+    shapeJobs : callable or [[int, ...], ...], optional
+        The indices of the jobs to run for each shape in `jointShapes` order, or a
+        function that takes the simplex and those shapes and returns them.
+        Defaults to running every job on every shape
+    jointNames : [str, ...], optional
+        The names of the joints. Defaults to "joint_{index}"
+    parents : [int, ...], optional
+        The parent index of each joint, or -1. Defaults to no parents
+    lockJoints : [int, ...], optional
+        The indices of joints that aren't allowed to move, like a head joint
+    weights : np.ndarray, optional
+        The (N, J) starting skin weights. Defaults to binding each vertex to its
+        closest joint that is either locked or solved by one of the jobs
+    weightRounds : int, optional
+        The number of times to solve for new weights. Use 0 to keep the given
+        weights. Defaults to 2
+    weightKwargs : dict, optional
+        Passed to jointPoses.solveSkinWeights
+    pBar : QProgressDialog, optional
+        An optional progress dialog
+    **solveKwargs
+        Passed to jointPoses.solveLayeredPoses
+
+    Returns
+    -------
+    : np.ndarray
+        The (numShapes, N, 3) residual shapes as absolute points, ready to write to a .smpx
+    : SimplexJointData
+        The joint data
+    """
+    numJoints = len(jointMats)
+    if jointNames is None:
+        jointNames = [f"joint_{i}" for i in range(numJoints)]
+    if parents is None:
+        parents = [-1] * numJoints
+    lockJoints = sorted(set(lockJoints or []))
+    _checkLockedHierarchy(parents, lockJoints)
+
+    shapes = jointShapes(simplex)
+    ptsByShape, vecByShape = buildFullShapes(simplex, shapes, deltaShapes, solver, pBar)
+    targets = np.array([restPts + ptsByShape[s] for s in shapes])
+
+    if shapeJobs is None:
+        shapeJobs = [list(range(len(jobs)))] * len(shapes)
+    elif callable(shapeJobs):
+        shapeJobs = shapeJobs(simplex, shapes)
+
+    if weights is None:
+        solved = {j for job in jobs for p in job.passes for j in p.joints}
+        weights = nearestJointWeights(
+            restPts, jointMats, sorted(solved | set(lockJoints))
+        )
+
+    if pBar is not None:
+        pBar.setLabelText("Solving Joint Poses")
+    for weightRound in range(weightRounds + 1):
+        now = datetime.datetime.now().time()
+        print(
+            f"{now}: Solving Joint Poses (round {weightRound + 1} of {weightRounds + 1})"
+        )
+        poseMats, fullParams = solveSimplexPoses(
+            simplex,
+            shapes,
+            targets,
+            vecByShape,
+            restPts,
+            jointMats,
+            parents,
+            weights,
+            jobs,
+            shapeJobs,
+            lockJoints,
+            **solveKwargs,
+        )
+        rmse = _fitRmse(restPts, targets, weights, jointMats, poseMats)
+        now = datetime.datetime.now().time()
+        print(f"{now}: Joint fit RMSE: {rmse}")
+        if weightRound == weightRounds:
+            break
+        print("Solving Skin Weights")
+        weights, weightRmse = solveSkinWeights(
+            restPts,
+            targets,
+            jointMats,
+            poseMats,
+            faces,
+            weights,
+            **(weightKwargs or {}),
+        )
+        now = datetime.datetime.now().time()
+        print(f"{now}: Weight fit RMSE: {weightRmse}")
+
+    return _finishJointify(
+        simplex,
+        deltaShapes,
+        restPts,
+        jointMats,
+        jointNames,
+        parents,
+        lockJoints,
+        shapes,
+        targets,
+        vecByShape,
+        poseMats,
+        weights,
+        rmse,
+        pBar,
+        fullParams=fullParams,
+    )
+
+
 def jointifySmpx(
     inPath: str,
     outPath: str,
@@ -276,6 +568,7 @@ def jointifySmpx(
     parents: list[int] | None = None,
     lockJoints: list[int] | None = None,
     jointDataPath: str | None = None,
+    jobs: list[SolveJob] | None = None,
     pBar=None,
     **solveKwargs,
 ) -> SimplexJointData:
@@ -297,10 +590,13 @@ def jointifySmpx(
         The indices of joints that aren't allowed to move, like a head joint
     jointDataPath : str, optional
         Where to write the joint data. Defaults to the outPath with a .npz extension
+    jobs : [SolveJob, ...], optional
+        If given, do a layered solve with these jobs. See `jointifySimplexLayered`
     pBar : QProgressDialog, optional
         An optional progress dialog
     **solveKwargs
-        Passed to jointPoses.solveJointPoses
+        Passed to `jointifySimplexLayered` if jobs are given,
+        otherwise to jointPoses.solveJointPoses
 
     Returns
     -------
@@ -319,7 +615,12 @@ def jointifySmpx(
     deltaShapes = verts - restPts[None, ...]
     faces = unflattenFaces(flatFaces, counts)
 
-    newShapePts, jointData = jointifySimplex(
+    if jobs is not None:
+        solveKwargs["jobs"] = jobs
+        jointify = jointifySimplexLayered
+    else:
+        jointify = jointifySimplex
+    newShapePts, jointData = jointify(
         simplex,
         solver,
         deltaShapes,
