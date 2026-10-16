@@ -51,9 +51,11 @@ import numpy as np
 
 ProgressCallback = Callable[[int, int, str], None]
 
+
 def _defaultProgressCallback(value, maximum, msg):
-    perc = value / maximum
-    print(msg, f"{value+1}/{maximum+1} : {perc:.2f}%")
+    perc = 100 * value / maximum
+    print(msg, f"{value + 1}/{maximum + 1} : {perc:.2f}%")
+
 
 def _progress(cb: ProgressCallback | None, value: int, maximum: int, msg: str) -> None:
     if cb is not None:
@@ -61,71 +63,18 @@ def _progress(cb: ProgressCallback | None, value: int, maximum: int, msg: str) -
     else:
         _defaultProgressCallback(value, maximum, msg)
 
+
 def toHomogeneous(pts: np.ndarray) -> np.ndarray:
     """Append a 1 to the last axis of an array of 3d points"""
-    ones = np.ones(pts.shape[:-1] + (1,), dtype=pts.dtype)
-    return np.concatenate((pts, ones), axis=-1)
+    ones = np.ones(pts.shape[:-1] + (pts.shape[-1] + 1,), dtype=pts.dtype)
+    ones[:, :-1] = pts
+    return ones
 
 
 # np.linalg.inv makes one LAPACK call per matrix, and some OpenBLAS builds
 # (including the one numpy ships on windows) spend ~30us of thread synchronization
 # on each of those calls. With hundreds of thousands of tiny matrices that's minutes
 # of overhead, so these do the inversions witH closed-form elementwise math instead
-
-
-def inv3(mats: np.ndarray) -> np.ndarray:
-    """Invert an array of 3x3 matrices using the adjugate
-
-    Parameters
-    ----------
-    mats : np.ndarray
-        A (..., 3, 3) array of matrices
-
-    Returns
-    -------
-    : np.ndarray
-        A (..., 3, 3) array of the inverse matrices
-    """
-    m = mats
-    adj = np.empty(m.shape)
-    adj[..., 0, 0] = m[..., 1, 1] * m[..., 2, 2] - m[..., 1, 2] * m[..., 2, 1]
-    adj[..., 0, 1] = m[..., 0, 2] * m[..., 2, 1] - m[..., 0, 1] * m[..., 2, 2]
-    adj[..., 0, 2] = m[..., 0, 1] * m[..., 1, 2] - m[..., 0, 2] * m[..., 1, 1]
-    adj[..., 1, 0] = m[..., 1, 2] * m[..., 2, 0] - m[..., 1, 0] * m[..., 2, 2]
-    adj[..., 1, 1] = m[..., 0, 0] * m[..., 2, 2] - m[..., 0, 2] * m[..., 2, 0]
-    adj[..., 1, 2] = m[..., 0, 2] * m[..., 1, 0] - m[..., 0, 0] * m[..., 1, 2]
-    adj[..., 2, 0] = m[..., 1, 0] * m[..., 2, 1] - m[..., 1, 1] * m[..., 2, 0]
-    adj[..., 2, 1] = m[..., 0, 1] * m[..., 2, 0] - m[..., 0, 0] * m[..., 2, 1]
-    adj[..., 2, 2] = m[..., 0, 0] * m[..., 1, 1] - m[..., 0, 1] * m[..., 1, 0]
-    det = (
-        m[..., 0, 0] * adj[..., 0, 0]
-        + m[..., 0, 1] * adj[..., 1, 0]
-        + m[..., 0, 2] * adj[..., 2, 0]
-    )
-    return adj / det[..., None, None]
-
-
-def invAffine(mats: np.ndarray) -> np.ndarray:
-    """Invert an array of row-convention 4x4 affine matrices
-
-    The last column of each matrix must be (0, 0, 0, 1)
-
-    Parameters
-    ----------
-    mats : np.ndarray
-        A (..., 4, 4) array of affine matrices
-
-    Returns
-    -------
-    : np.ndarray
-        A (..., 4, 4) array of the inverse matrices
-    """
-    rinv = inv3(mats[..., :3, :3])
-    ret = np.zeros(mats.shape)
-    ret[..., :3, :3] = rinv
-    ret[..., 3, :3] = -(mats[..., 3:4, :3] @ rinv)[..., 0, :]
-    ret[..., 3, 3] = 1.0
-    return ret
 
 
 #########################################################################
@@ -289,7 +238,7 @@ def decomposeMats(mats: np.ndarray):
     scsh[..., 2, 2] = c
 
     rot = np.zeros(mats.shape)
-    rot[..., :3, :3] = inv3(scsh) @ m3
+    rot[..., :3, :3] = np.linalg.inv(scsh) @ m3
     rot[..., 3, 3] = 1.0
 
     scale = np.stack((a, b, c), axis=-1)
@@ -339,7 +288,7 @@ def localMats(worldMats: np.ndarray, parents: Sequence[int]) -> np.ndarray:
         A (..., J, 4, 4) array of local matrices
     """
     ret = worldMats.copy()
-    invs = invAffine(worldMats)
+    invs = np.linalg.inv(worldMats)
     for j, p in enumerate(parents):
         if p >= 0:
             ret[..., j, :, :] = worldMats[..., j, :, :] @ invs[..., p, :, :]
@@ -378,7 +327,7 @@ def poseDeltaParams(restLocal: np.ndarray, poseLocal: np.ndarray) -> np.ndarray:
     : np.ndarray
         A (..., J, 4, 3) array of ``(scale - 1, shear, axisAngle, translation)``
     """
-    deltas = poseLocal @ invAffine(restLocal)
+    deltas = poseLocal @ np.linalg.inv(restLocal)
     scale, shear, rot, tran = decomposeMats(deltas)
     return np.stack((scale - 1.0, shear, logRot(rot), tran), axis=-2)
 
@@ -503,7 +452,7 @@ def skinMatrices(jointMats: np.ndarray, poseMats: np.ndarray) -> np.ndarray:
     : np.ndarray
         A (..., J, 4, 4) array of skinning matrices
     """
-    return invAffine(jointMats) @ poseMats
+    return np.linalg.inv(jointMats) @ poseMats
 
 
 def skinVerts(
@@ -570,7 +519,7 @@ def unskinVerts(
     for s, mats in enumerate(skinMats):
         _progress(progress, s, len(skinMats), "Un-skinning targets")
         # The weights are normalized, so the blended matrices are still affine
-        inv = invAffine(_blendMats(weights, mats))
+        inv = np.linalg.inv(_blendMats(weights, mats))
         out[s] = np.einsum("na,nab->nb", toHomogeneous(targetVerts[s]), inv)[..., :3]
     return out
 
@@ -743,7 +692,7 @@ def _solvePass(
         for k in carriedBy[j]:
             if k != j:
                 # The carried joints keep their offset from their carrier
-                newSkin[:, k] = skin[:, k] @ invAffine(skin[:, j]) @ solved[:, i]
+                newSkin[:, k] = skin[:, k] @ np.linalg.inv(skin[:, j]) @ solved[:, i]
     return localMats(jointMats[None] @ newSkin, parents)
 
 
@@ -820,7 +769,7 @@ def solveLayeredPoses(
     restLocal = localMats(jointMats, parents)
     if initLocal is None:
         initLocal = np.broadcast_to(restLocal, (numShapes,) + restLocal.shape)
-    invRest = invAffine(jointMats)
+    invRest = np.linalg.inv(jointMats)
     order = _jointOrder(parents)
     locked = set(lockJoints or [])
 
@@ -875,7 +824,7 @@ def solveLayeredPoses(
 
 
 #########################################################################
-####                            Dem Bones                             ####
+####                            Dem Bones                            ####
 #########################################################################
 
 
