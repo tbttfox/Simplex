@@ -62,9 +62,6 @@ import json
 
 from .jointPoses import SolveJob, SolvePass
 
-# Settings from the old numpy pose solver that don't exist anymore
-_OBSOLETE_SETTINGS = ("rotRegScale", "rotRadius", "priorReg")
-
 
 def solveKwargsFromConfig(rawconfig: dict | str) -> dict:
     """Get the keyword arguments for `simplexJoints.jointifySmpx` (or
@@ -88,9 +85,6 @@ def solveKwargsFromConfig(rawconfig: dict | str) -> dict:
         config = rawconfig
 
     kwargs = dict(config.get("settings", {}))
-    obsolete = [k for k in _OBSOLETE_SETTINGS if kwargs.pop(k, None) is not None]
-    if obsolete:
-        print(f"Ignoring obsolete settings in the solve config: {obsolete}")
     jointNames, pars = zip(*config["hierarchy"])
     indexByName = {k: i for i, k in enumerate(jointNames)}
     parIdxs = [indexByName.get(p, -1) for p in pars]
