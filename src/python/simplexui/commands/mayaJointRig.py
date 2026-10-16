@@ -107,7 +107,8 @@ def jointifySmpxFromScene(
     pBar : QProgressDialog, optional
         An optional progress dialog
     **solveKwargs
-        Passed to jointPoses.solveJointPoses
+        Passed to simplexJoints.jointifySmpx. Use
+        jointSolveConfig.solveKwargsFromConfig to get a layered solve
 
     Returns
     -------
