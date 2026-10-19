@@ -25,11 +25,12 @@ The file looks like this::
             ["head01", "neck02"],
             ...
         ],
-        "settings": {"iterations": 10, "minWeight": 0.3},
+        "settings": {"rotRegScale": 0.5, "iterations": 10, "minWeight": 0.3},
         "jobs": {
             "bones": [
                 {
                     "name": "bones",
+                    "rotReg": 1.0,
                     "joints": {"FACIAL_C_Jaw": "rt", "FACIAL_C_LowerLipRotation": "r"}
                 }
             ],
@@ -45,8 +46,8 @@ The file looks like this::
 * ``jobs`` maps a job name to its list of passes. The passes of a job run in order,
   and each one solves its joints starting from where the previous pass left them.
   The joint flags say whether a joint can rotate (``r``), translate (``t``), or both.
-  Each pass is a Dem Bones solve, which always solves full rigid transforms, so for
-  now any non-empty flags just mean the joint gets solved
+  ``rotReg`` pulls the rotations toward where they started (see
+  `jointPoses.SolvePass`)
 * ``defaultJobs`` are the jobs every shape runs, in order
 * ``shapeJobs`` replaces the default jobs for specific simplex shapes, by name
 * ``settings`` are passed to `jointPoses.solveLayeredPoses`
@@ -106,7 +107,9 @@ def solveKwargsFromConfig(rawconfig: dict | str) -> dict:
                     missing.add(name)
                     continue
                 joints[indexByName[name]] = ("r" in flags, "t" in flags)
-            solvePasses.append(SolvePass(p.get("name", jobName), joints))
+            solvePasses.append(
+                SolvePass(p.get("name", jobName), joints, p.get("rotReg", 0.5))
+            )
         jobIndexByName[jobName] = len(jobs)
         jobs.append(SolveJob(jobName, solvePasses))
     if missing:
