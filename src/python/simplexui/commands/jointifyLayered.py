@@ -112,8 +112,7 @@ def main():
     parser.add_argument("--joint-mats", required=True, help="A .npy of (J, 4, 4) rest world matrices")
     parser.add_argument("--weights", help="A .npy of (N, J) starting skin weights")
     parser.add_argument("--weight-rounds", type=int, help="How many times to re-solve the weights. 0 keeps --weights")
-    parser.add_argument("--rot-reg-scale", type=float)
-    parser.add_argument("--prior-reg", type=float)
+    parser.add_argument("--rot-reg-scale", type=float, help="Multiplies each pass's rotReg. 0 turns it off")
     parser.add_argument("--min-weight", type=float)
     parser.add_argument("--iterations", type=int, help="Dem Bones transformation iterations per pass")
     parser.add_argument("--chunk-size", type=int, help="How many shapes to give Dem Bones at once")
@@ -130,8 +129,7 @@ def main():
         minWeight=args.min_weight,
         iterations=args.iterations,
         chunkSize=args.chunk_size,
-        prior_reg=args.prior_reg,
-        rot_reg_scale=args.rot_reg_scale,
+        rotRegScale=args.rot_reg_scale,
     )
 
 

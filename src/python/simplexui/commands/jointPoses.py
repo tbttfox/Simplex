@@ -622,10 +622,15 @@ class SolvePass:
         The indices of the joints to solve, mapped to whether each one
         is allowed to (rotate, translate). Dem Bones always solves full rigid
         transforms, so for now these flags are ignored
+    rotReg : float
+        How strongly the rotations are pulled toward their starting local rotations.
+        At 1.0 the regularization is weighted the same as the data, which roughly
+        halves the rotations. This gets multiplied by the solve's rotRegScale
     """
 
     name: str
     joints: dict[int, tuple[bool, bool]]
+    rotReg: float = 0.5
 
 
 @dataclass
@@ -669,8 +674,10 @@ def _solvePass(
     order: Sequence[int],
     weights: np.ndarray,
     local: np.ndarray,
+    priorLocal: np.ndarray,
     solvePass: SolvePass,
     iterations: int,
+    rotRegScale: float,
     minWeight: float,
 ) -> np.ndarray:
     """Run a single pass of the layered solve on a chunk of shapes with Dem Bones
@@ -681,6 +688,13 @@ def _solvePass(
     each carrier is solved as a single bone. This is exact when the carried joints'
     local transforms are at rest, and approximate otherwise. Joints with no solved
     ancestor keep their world transforms, and are given to Dem Bones as locked bones
+
+    Dem Bones doesn't have any rotation regularization, so it's done with extra
+    anchor points. Each free joint gets a few anchors that are only bound to it, and
+    their targets are where the joint would put them with its prior local rotation.
+    The anchor targets are centered on where the joint currently puts their center,
+    so they only pull on the rotation. That center moves as the joint does, so the
+    anchors get updated between each Dem Bones iteration
 
     Returns
     -------
@@ -720,10 +734,72 @@ def _solvePass(
     ]
     bones = free + fixed
     boneWeights = np.concatenate((freeWeights[vIdx], weights[vIdx][:, fixed]), axis=1)
+    pts, tgts = restVerts[vIdx], targetVerts[:, vIdx]
+
+    # The carried joints keep their offset from their carrier
+    offsets = {
+        k: skin[:, k] @ invAffine(skin[:, j])
+        for j in free
+        for k in carriedBy[j]
+        if k != j
+    }
+
+    def assemble(solved):
+        """Get every joint's (S, J, 4, 4) skin matrices from the solved bones"""
+        ret = skin.copy()
+        for i, j in enumerate(free):
+            ret[:, j] = solved[:, i]
+            for k in carriedBy[j]:
+                if k != j:
+                    ret[:, k] = offsets[k] @ solved[:, i]
+        return ret
+
+    # Dem Bones expects every point's weights to sum to 1, so the anchors get a
+    # weight of 1 and their spread sets their pull instead. Six anchors per bone
+    # (two along each principal axis) match the second moment of its points
+    # weighted by rotReg and the squared skin weights, the same way the data
+    # points are weighted. Using so few anchors also means their pull on the
+    # translation is tiny before they settle, so they settle quickly
+    rotReg = solvePass.rotReg * rotRegScale
+    numAnchors = 6 * len(free) if rotReg > 0 else 0
+    if numAnchors:
+        centers = np.empty((len(free), 3))
+        anchorOffsets = np.empty((len(free), 6, 3))
+        for i in range(len(free)):
+            sqW = freeWeights[vIdx, i] ** 2
+            centers[i] = sqW @ pts / sqW.sum()
+            rel = pts - centers[i]
+            moment = rotReg * np.einsum("n,ni,nk->ik", sqW, rel, rel)
+            # Keep the regularization in effect when the points are degenerate,
+            # like when a joint only influences a line of points
+            moment += np.eye(3) * 0.01 * np.trace(moment)
+            vals, vecs = np.linalg.eigh(moment)
+            axes = (vecs * np.sqrt(np.maximum(vals, 0.0) / 2)).T
+            anchorOffsets[i] = np.concatenate((axes, -axes))
+        anchorBone = np.repeat(np.arange(len(free)), 6)
+        anchorOffsets = anchorOffsets.reshape(-1, 3)
+        centersH = toHomogeneous(centers)
+        anchorWeights = np.zeros((numAnchors, len(bones)))
+        anchorWeights[np.arange(numAnchors), anchorBone] = 1.0
+        pts = np.concatenate((pts, centers[anchorBone] + anchorOffsets))
+        boneWeights = np.concatenate((boneWeights, anchorWeights))
+        tgts = np.concatenate((tgts, np.zeros((len(tgts), numAnchors, 3))), axis=1)
+
+    def anchorTargets(solved):
+        """Get the (S, A, 3) anchor targets for the current solved bones"""
+        world = jointMats[None] @ assemble(solved)
+        priorRot = np.empty((len(local), len(free), 3, 3))
+        for i, j in enumerate(free):
+            p = parents[j]
+            priorWorld = priorLocal[:, j] if p < 0 else priorLocal[:, j] @ world[:, p]
+            priorRot[:, i] = (invRest[j] @ priorWorld)[:, :3, :3]
+        curCenters = np.einsum("bk,sbkj->sbj", centersH, solved[:, : len(free), :, :3])
+        rotated = np.einsum("ak,sakj->saj", anchorOffsets, priorRot[:, anchorBone])
+        return rotated + curCenters[:, anchorBone]
 
     db = _buildDemBones(
-        restVerts[vIdx],
-        targetVerts[:, vIdx],
+        pts,
+        tgts,
         [],
         boneWeights,
         len(bones),
@@ -735,20 +811,22 @@ def _solvePass(
     )
     # The weights are fixed, so there's no reason to loop the global iterations
     db.nIters = 1
-    db.nTransIters = iterations
     db.m = _toDemBonesMats(skin[:, bones])
     db.lockM = np.array([0] * len(free) + [1] * len(fixed), dtype=np.int32)
-    db.compute()
-    solved = _fromDemBonesMats(db.m, len(local), len(bones))
+    if numAnchors:
+        db.nTransIters = 1
+        solved = skin[:, bones]
+        for _ in range(iterations):
+            tgts[:, len(vIdx) :] = anchorTargets(solved)
+            db.v = _toDemBonesVerts(tgts)
+            db.compute()
+            solved = _fromDemBonesMats(db.m, len(local), len(bones))
+    else:
+        db.nTransIters = iterations
+        db.compute()
+        solved = _fromDemBonesMats(db.m, len(local), len(bones))
 
-    newSkin = skin.copy()
-    for i, j in enumerate(free):
-        newSkin[:, j] = solved[:, i]
-        for k in carriedBy[j]:
-            if k != j:
-                # The carried joints keep their offset from their carrier
-                newSkin[:, k] = skin[:, k] @ invAffine(skin[:, j]) @ solved[:, i]
-    return localMats(jointMats[None] @ newSkin, parents)
+    return localMats(jointMats[None] @ assemble(solved), parents)
 
 
 def solveLayeredPoses(
@@ -762,6 +840,7 @@ def solveLayeredPoses(
     initLocal: np.ndarray | None = None,
     lockJoints: Sequence[int] | None = None,
     iterations: int = 10,
+    rotRegScale: float = 0.2,
     minWeight: float = 0.3,
     chunkSize: int = 64,
     progress: ProgressCallback | None = None,
@@ -774,6 +853,10 @@ def solveLayeredPoses(
     yet get carried along by their solved ancestors, so the early passes solve the
     big parent joints with the influence of their whole hierarchy, and the later
     passes refine their children. See `_solvePass`
+
+    The rotations are regularized toward the starting local rotations. That, plus
+    starting each fit from the previous result, keeps the poses consistent so they
+    blend well
 
     Parameters
     ----------
@@ -793,11 +876,15 @@ def solveLayeredPoses(
         For each target, the indices of the jobs to run on it, in order.
         Defaults to running all the jobs on every target
     initLocal : np.ndarray, optional
-        (S, J, 4, 4) local matrices to start from. Defaults to the rest pose
+        (S, J, 4, 4) local matrices to start from. The rotations are regularized
+        toward these. Defaults to the rest pose
     lockJoints : [int, ...], optional
         Joints that are never solved, even if a pass includes them
     iterations : int, optional
         The number of Dem Bones transformation iterations for each pass. Defaults to 10
+    rotRegScale : float, optional
+        A multiplier on each pass's rotation regularization. Use 0 to turn it off.
+        Defaults to 0.2
     minWeight : float, optional
         Joints whose max weight (including the joints they carry) is below this
         don't get solved, so they just follow their parents. Defaults to 0.3
@@ -836,7 +923,7 @@ def solveLayeredPoses(
             jointDict = {
                 j: rt for j, rt in p.joints.items() if j not in locked and any(rt)
             }
-            passes.append(SolvePass(p.name, jointDict))
+            passes.append(SolvePass(p.name, jointDict, p.rotReg))
         solveJobs.append(SolveJob(job.name, passes))
 
     # Targets with the same jobs get solved together
@@ -852,7 +939,8 @@ def solveLayeredPoses(
     out = np.empty((numShapes,) + jointMats.shape)
     done = 0
     for jobIdxs, idxs in chunks:
-        local = np.array(initLocal[idxs])
+        prior = np.array(initLocal[idxs])
+        local = prior.copy()
         tgts = targetVerts[idxs]
         for ji in jobIdxs:
             for solvePass in solveJobs[ji].passes:
@@ -868,8 +956,10 @@ def solveLayeredPoses(
                     order,
                     weights,
                     local,
+                    prior,
                     solvePass,
                     iterations,
+                    rotRegScale,
                     minWeight,
                 )
         out[idxs] = worldMats(local, parents)
@@ -1016,9 +1106,7 @@ def _buildDemBones(
     db.fStart = np.array([0, numFrames], dtype=np.int32)
     db.subjectID = np.zeros(numFrames, dtype=np.int32)
     db.u = np.ascontiguousarray(restVerts.T)
-    db.v = np.ascontiguousarray(
-        targetVerts.transpose(0, 2, 1).reshape(3 * numFrames, numVerts)
-    )
+    db.v = _toDemBonesVerts(targetVerts)
     db.fv = [list(map(int, f)) for f in faces]
     db.set_weights(np.ascontiguousarray(weights.T))
 
@@ -1040,6 +1128,14 @@ def _demBonesWeights(db) -> np.ndarray:
 
 # Dem bones uses column-convention skinning matrices: v = sum(w * M @ u)
 # stored as a (4 * numFrames, 4 * numBones) block matrix
+def _toDemBonesVerts(targetVerts: np.ndarray) -> np.ndarray:
+    """Convert (S, N, 3) target positions to Dem Bones' (3 * S, N) layout"""
+    numFrames, numVerts = targetVerts.shape[:2]
+    return np.ascontiguousarray(
+        targetVerts.transpose(0, 2, 1).reshape(3 * numFrames, numVerts)
+    )
+
+
 def _toDemBonesMats(skinMats: np.ndarray) -> np.ndarray:
     """Convert (S, B, 4, 4) row-convention skinning matrices to Dem Bones' layout"""
     numFrames, numBones = skinMats.shape[:2]
