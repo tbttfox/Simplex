@@ -17,7 +17,7 @@
 """Decompose blendshape targets into joint poses, skin weights, and residual shapes
 
 This module is intentionally independent of Simplex, Qt, and any DCC. It only needs
-numpy and py_dem_bones so it can be used anywhere.
+numpy (and py_dem_bones for `solveJointPoses`) so it can be used anywhere.
 
 Conventions
 -----------
@@ -75,6 +75,61 @@ def toHomogeneous(pts: np.ndarray) -> np.ndarray:
 # (including the one numpy ships on windows) spend ~30us of thread synchronization
 # on each of those calls. With hundreds of thousands of tiny matrices that's minutes
 # of overhead, so these do the inversions witH closed-form elementwise math instead
+
+
+def inv3(mats: np.ndarray) -> np.ndarray:
+    """Invert an array of 3x3 matrices using the adjugate
+
+    Parameters
+    ----------
+    mats : np.ndarray
+        A (..., 3, 3) array of matrices
+
+    Returns
+    -------
+    : np.ndarray
+        A (..., 3, 3) array of the inverse matrices
+    """
+    m = mats
+    adj = np.empty(m.shape)
+    adj[..., 0, 0] = m[..., 1, 1] * m[..., 2, 2] - m[..., 1, 2] * m[..., 2, 1]
+    adj[..., 0, 1] = m[..., 0, 2] * m[..., 2, 1] - m[..., 0, 1] * m[..., 2, 2]
+    adj[..., 0, 2] = m[..., 0, 1] * m[..., 1, 2] - m[..., 0, 2] * m[..., 1, 1]
+    adj[..., 1, 0] = m[..., 1, 2] * m[..., 2, 0] - m[..., 1, 0] * m[..., 2, 2]
+    adj[..., 1, 1] = m[..., 0, 0] * m[..., 2, 2] - m[..., 0, 2] * m[..., 2, 0]
+    adj[..., 1, 2] = m[..., 0, 2] * m[..., 1, 0] - m[..., 0, 0] * m[..., 1, 2]
+    adj[..., 2, 0] = m[..., 1, 0] * m[..., 2, 1] - m[..., 1, 1] * m[..., 2, 0]
+    adj[..., 2, 1] = m[..., 0, 1] * m[..., 2, 0] - m[..., 0, 0] * m[..., 2, 1]
+    adj[..., 2, 2] = m[..., 0, 0] * m[..., 1, 1] - m[..., 0, 1] * m[..., 1, 0]
+    det = (
+        m[..., 0, 0] * adj[..., 0, 0]
+        + m[..., 0, 1] * adj[..., 1, 0]
+        + m[..., 0, 2] * adj[..., 2, 0]
+    )
+    return adj / det[..., None, None]
+
+
+def invAffine(mats: np.ndarray) -> np.ndarray:
+    """Invert an array of row-convention 4x4 affine matrices
+
+    The last column of each matrix must be (0, 0, 0, 1)
+
+    Parameters
+    ----------
+    mats : np.ndarray
+        A (..., 4, 4) array of affine matrices
+
+    Returns
+    -------
+    : np.ndarray
+        A (..., 4, 4) array of the inverse matrices
+    """
+    rinv = inv3(mats[..., :3, :3])
+    ret = np.zeros(mats.shape)
+    ret[..., :3, :3] = rinv
+    ret[..., 3, :3] = -(mats[..., 3:4, :3] @ rinv)[..., 0, :]
+    ret[..., 3, 3] = 1.0
+    return ret
 
 
 #########################################################################
@@ -238,7 +293,7 @@ def decomposeMats(mats: np.ndarray):
     scsh[..., 2, 2] = c
 
     rot = np.zeros(mats.shape)
-    rot[..., :3, :3] = np.linalg.inv(scsh) @ m3
+    rot[..., :3, :3] = inv3(scsh) @ m3
     rot[..., 3, 3] = 1.0
 
     scale = np.stack((a, b, c), axis=-1)
@@ -288,7 +343,7 @@ def localMats(worldMats: np.ndarray, parents: Sequence[int]) -> np.ndarray:
         A (..., J, 4, 4) array of local matrices
     """
     ret = worldMats.copy()
-    invs = np.linalg.inv(worldMats)
+    invs = invAffine(worldMats)
     for j, p in enumerate(parents):
         if p >= 0:
             ret[..., j, :, :] = worldMats[..., j, :, :] @ invs[..., p, :, :]
@@ -327,7 +382,7 @@ def poseDeltaParams(restLocal: np.ndarray, poseLocal: np.ndarray) -> np.ndarray:
     : np.ndarray
         A (..., J, 4, 3) array of ``(scale - 1, shear, axisAngle, translation)``
     """
-    deltas = poseLocal @ np.linalg.inv(restLocal)
+    deltas = poseLocal @ invAffine(restLocal)
     scale, shear, rot, tran = decomposeMats(deltas)
     return np.stack((scale - 1.0, shear, logRot(rot), tran), axis=-2)
 
@@ -452,7 +507,7 @@ def skinMatrices(jointMats: np.ndarray, poseMats: np.ndarray) -> np.ndarray:
     : np.ndarray
         A (..., J, 4, 4) array of skinning matrices
     """
-    return np.linalg.inv(jointMats) @ poseMats
+    return invAffine(jointMats) @ poseMats
 
 
 def skinVerts(
@@ -519,7 +574,7 @@ def unskinVerts(
     for s, mats in enumerate(skinMats):
         _progress(progress, s, len(skinMats), "Un-skinning targets")
         # The weights are normalized, so the blended matrices are still affine
-        inv = np.linalg.inv(_blendMats(weights, mats))
+        inv = invAffine(_blendMats(weights, mats))
         out[s] = np.einsum("na,nab->nb", toHomogeneous(targetVerts[s]), inv)[..., :3]
     return out
 
@@ -692,7 +747,7 @@ def _solvePass(
         for k in carriedBy[j]:
             if k != j:
                 # The carried joints keep their offset from their carrier
-                newSkin[:, k] = skin[:, k] @ np.linalg.inv(skin[:, j]) @ solved[:, i]
+                newSkin[:, k] = skin[:, k] @ invAffine(skin[:, j]) @ solved[:, i]
     return localMats(jointMats[None] @ newSkin, parents)
 
 
@@ -769,7 +824,7 @@ def solveLayeredPoses(
     restLocal = localMats(jointMats, parents)
     if initLocal is None:
         initLocal = np.broadcast_to(restLocal, (numShapes,) + restLocal.shape)
-    invRest = np.linalg.inv(jointMats)
+    invRest = invAffine(jointMats)
     order = _jointOrder(parents)
     locked = set(lockJoints or [])
 
@@ -1051,7 +1106,7 @@ def solveSkinWeights(
     """
     restVerts = np.asarray(restVerts, dtype=np.float64)
     targetVerts = np.asarray(targetVerts, dtype=np.float64)
-    numJoints = len(jointMats)
+    numFrames, numJoints = len(targetVerts), len(jointMats)
 
     db = _buildDemBones(
         restVerts,

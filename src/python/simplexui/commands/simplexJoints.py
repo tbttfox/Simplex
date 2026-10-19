@@ -344,7 +344,8 @@ def solveSimplexPoses(
     """Solve the layered joint poses for the shapes of a simplex system
 
     The shapes are solved in order of their combo depth. Each combo starts from the
-    pose that the rig would give it without any correction of its own
+    pose that the rig would give it without any correction of its own, and its
+    rotations are regularized toward that pose. That keeps the combo corrections small
 
     Returns
     -------
