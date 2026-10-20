@@ -36,6 +36,7 @@ from __future__ import annotations
 import multiprocessing
 import os
 import pickle
+import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -572,13 +573,51 @@ def _solveChunkInWorker(
     return _solveChunk(_SHARED, jobIdxs, prior, _SHARED["targets"][idxs])
 
 
+class _NoWindowProcess(multiprocessing.context.SpawnProcess):
+    """A spawned process that doesn't open a console window on Windows
+
+    Maya is a GUI app, so any console program it starts (like mayapy) gets its own
+    console window. multiprocessing doesn't have a way to pass CREATE_NO_WINDOW, so
+    this adds it to the CreateProcess call that starts the worker
+    """
+
+    @staticmethod
+    def _Popen(process_obj):
+        if os.name != "nt":
+            return multiprocessing.context.SpawnProcess._Popen(process_obj)
+
+        import _winapi
+
+        createProcess = _winapi.CreateProcess
+
+        def createNoWindow(*args):
+            # Put the original back as soon as possible so nothing else gets this
+            _winapi.CreateProcess = createProcess
+            args = list(args)
+            args[5] |= subprocess.CREATE_NO_WINDOW  # The creation flags
+            return createProcess(*args)
+
+        _winapi.CreateProcess = createNoWindow
+        try:
+            return multiprocessing.context.SpawnProcess._Popen(process_obj)
+        finally:
+            _winapi.CreateProcess = createProcess
+
+
+class _NoWindowContext(multiprocessing.context.SpawnContext):
+    """A spawn context that starts its processes without console windows"""
+
+    Process = _NoWindowProcess
+
+
 def _spawnContext():
     """Get a multiprocessing context that starts fresh python processes
 
     Spawned processes run sys.executable, but inside Maya that's the Maya
-    application itself, so they need to run mayapy instead
+    application itself, so they need to run mayapy instead. They also don't get
+    console windows on Windows
     """
-    ctx = multiprocessing.get_context("spawn")
+    ctx = _NoWindowContext()
     exeDir, exeName = os.path.split(sys.executable)
     if os.path.splitext(exeName)[0].lower() == "maya":
         mayapy = os.path.join(exeDir, "mayapy.exe" if os.name == "nt" else "mayapy")
