@@ -33,6 +33,9 @@ from the current rotation, so it never flips to a far away answer
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
@@ -46,7 +49,6 @@ from .jointPoses import (
     _rotToQuat,
     invAffine,
     localMats,
-    skinVerts,
     toHomogeneous,
     worldMats,
 )
@@ -222,38 +224,83 @@ def _fitRigid(
     return ret
 
 
-def _solvePass(
-    restVerts: np.ndarray,
-    targetVerts: np.ndarray,
-    jointMats: np.ndarray,
-    invRest: np.ndarray,
-    parents: Sequence[int],
-    order: Sequence[int],
-    weights: np.ndarray,
-    local: np.ndarray,
-    priorLocal: np.ndarray,
-    solvePass: SolvePass,
-    iterations: int,
-    rotRegScale: float,
-    rotRadius: float,
-    priorReg: float,
-    minWeight: float,
-) -> np.ndarray:
-    """Run a single pass of the layered solve on a chunk of shapes
+# The smallest chunk of targets worth giving to its own thread
+_MIN_CHUNK = 32
 
-    Every joint that isn't solved in this pass keeps its local transform, so it
-    gets carried along by its closest solved ancestor. That means each solved joint
-    is fit to the points skinned to it *and* to all the joints it carries. Joints
-    with no solved ancestor keep their world transforms
+
+@dataclass
+class _PassSetup:
+    """The parts of a pass that don't depend on the shapes being solved, so they
+    can be shared by every chunk
+
+    Attributes
+    ----------
+    free : [int, ...]
+        The joints that get solved, parents first
+    carrier : [int, ...]
+        For every joint, the free joint that carries it, or -1
+    carriedBy : {int: [int, ...]}
+        The joints each free joint carries, including itself
+    supports : {int: np.ndarray}
+        The indices of the vertices each free joint moves
+    positions : {int: {int: np.ndarray}}
+        For each free joint, where each carried joint's vertices are in its support
+    vertWeights : {int: np.ndarray}
+        The total weight each free joint has on each vertex of its support
+    """
+
+    free: list[int]
+    carrier: list[int]
+    carriedBy: dict[int, list[int]]
+    supports: dict[int, np.ndarray]
+    positions: dict[int, dict[int, np.ndarray]]
+    vertWeights: dict[int, np.ndarray]
+
+
+def _jointVerts(
+    restVerts: np.ndarray, weights: np.ndarray
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Get the indices of the vertices each joint influences, and their homogeneous
+    rest positions premultiplied by the joint's weights
+
+    Skin weights only have a few influences per vertex, so working with these is
+    much faster than working with the full (N, J) weights
+    """
+    jIdx, vIdx = np.nonzero(weights.T)
+    splits = np.searchsorted(jIdx, np.arange(1, weights.shape[1]))
+    restH = toHomogeneous(restVerts)
+    ret = []
+    for k, idx in enumerate(np.split(vIdx, splits)):
+        ret.append((idx, restH[idx] * weights[idx, k, None]))
+    return ret
+
+
+def _skinSparse(
+    jointVerts: list[tuple[np.ndarray, np.ndarray]], numVerts: int, skin: np.ndarray
+) -> np.ndarray:
+    """Linear blend skin the rest points with the output of `_jointVerts`
 
     Returns
     -------
     : np.ndarray
-        The updated (S, J, 4, 4) local matrices
+        The (S, N, 3) skinned points
     """
-    numShapes = len(local)
-    skin = invRest[None] @ worldMats(local, parents)
+    out = np.zeros((len(skin), numVerts, 3))
+    for k, (idx, pts) in enumerate(jointVerts):
+        if len(idx):
+            out[:, idx] += pts[None] @ skin[:, k, :, :3]
+    return out
 
+
+def _passSetup(
+    solvePass: SolvePass,
+    parents: Sequence[int],
+    order: Sequence[int],
+    jointVerts: list[tuple[np.ndarray, np.ndarray]],
+    numVerts: int,
+    minWeight: float,
+) -> _PassSetup:
+    """Figure out which joints a pass solves, and what each of them carries"""
     free = [j for j in order if j in solvePass.joints]
     while True:
         freeSet = set(free)
@@ -268,40 +315,82 @@ def _solvePass(
 
         # Joints with barely any influence can't be solved reliably, so drop them
         # and let their ancestors carry them instead
-        totals = {j: weights[:, carriedBy[j]].sum(axis=1) for j in free}
+        totals = {}
+        for j in free:
+            tot = np.zeros(numVerts)
+            for k in carriedBy[j]:
+                idx, pts = jointVerts[k]
+                tot[idx] += pts[:, 3]
+            totals[j] = tot
         keep = [j for j in free if totals[j].max() >= minWeight]
         if len(keep) == len(free):
             break
         free = keep
+
+    supports, positions, vertWeights = {}, {}, {}
+    for j in free:
+        vIdx = np.nonzero(totals[j])[0]
+        pos = np.full(numVerts, -1)
+        pos[vIdx] = np.arange(len(vIdx))
+        supports[j] = vIdx
+        positions[j] = {k: pos[jointVerts[k][0]] for k in carriedBy[j]}
+        vertWeights[j] = totals[j][vIdx]
+    return _PassSetup(free, carrier, carriedBy, supports, positions, vertWeights)
+
+
+def _solvePass(
+    targetVerts: np.ndarray,
+    jointMats: np.ndarray,
+    invRest: np.ndarray,
+    parents: Sequence[int],
+    jointVerts: list[tuple[np.ndarray, np.ndarray]],
+    setup: _PassSetup,
+    local: np.ndarray,
+    priorLocal: np.ndarray,
+    solvePass: SolvePass,
+    iterations: int,
+    rotRegScale: float,
+    rotRadius: float,
+    priorReg: float,
+) -> np.ndarray:
+    """Run a single pass of the layered solve on a chunk of shapes
+
+    Every joint that isn't solved in this pass keeps its local transform, so it
+    gets carried along by its closest solved ancestor. That means each solved joint
+    is fit to the points skinned to it *and* to all the joints it carries. Joints
+    with no solved ancestor keep their world transforms
+
+    Returns
+    -------
+    : np.ndarray
+        The updated (S, J, 4, 4) local matrices
+    """
+    free, carrier = setup.free, setup.carrier
     if not free:
         return local
+    numShapes, numVerts = len(local), targetVerts.shape[1]
+    skin = invRest[None] @ worldMats(local, parents)
 
     # For every free joint, build the homogeneous points it moves (premultiplied by
     # the skin weights). The carried joints' skin matrices are K @ skin[free] where K
     # stays constant, so those points can be pre-transformed by K
-    restH = toHomogeneous(restVerts)
-    supports, ptsH, pts3, tgts = {}, {}, {}, {}
+    ptsH, pts3, tgts = {}, {}, {}
     for j in free:
-        carried = carriedBy[j]
-        vIdx = np.nonzero(weights[:, carried].sum(axis=1))[0]
-        pos = np.full(len(restVerts), -1)
-        pos[vIdx] = np.arange(len(vIdx))
+        vIdx = setup.supports[j]
         invJ = invAffine(skin[:, j])
         h = np.zeros((numShapes, len(vIdx), 4))
-        for k in carried:
-            kIdx = np.nonzero(weights[:, k])[0]
-            pts = restH[kIdx] * weights[kIdx, k, None]
+        for k in setup.carriedBy[j]:
+            pos, pts = setup.positions[j][k], jointVerts[k][1]
             if k == j:
-                h[:, pos[kIdx]] += pts[None]
+                h[:, pos] += pts[None]
             else:
-                h[:, pos[kIdx]] += pts[None] @ (skin[:, k] @ invJ)
-        supports[j] = vIdx
+                h[:, pos] += pts[None] @ (skin[:, k] @ invJ)
         ptsH[j] = h
-        pts3[j] = h[..., :3] / h[:1, :, 3:]
+        pts3[j] = h[..., :3] / setup.vertWeights[j][None, :, None]
         tgts[j] = targetVerts[:, vIdx]
 
     # The current skinned positions
-    pred = skinVerts(restVerts, weights, skin)
+    pred = _skinSparse(jointVerts, numVerts, skin)
     freeSkin = {j: skin[:, j].copy() for j in free}
     carrierOffset = {}
     for k, c in enumerate(carrier):
@@ -319,8 +408,8 @@ def _solvePass(
     rotReg = solvePass.rotReg * rotRegScale
     for _ in range(iterations):
         for j in free:
-            vIdx, h = supports[j], ptsH[j]
-            vw = h[0, :, 3]
+            vIdx, h = setup.supports[j], ptsH[j]
+            vw = setup.vertWeights[j]
             cur = freeSkin[j]
             resid = tgts[j] - pred[:, vIdx] + h @ cur[..., :3]
 
@@ -371,6 +460,7 @@ def solveLayeredPoses(
     priorReg: float = 0.05,
     minWeight: float = 0.3,
     chunkSize: int = 64,
+    threads: int | None = None,
     progress: ProgressCallback | None = None,
 ) -> np.ndarray:
     """Solve joint poses in layers with fixed skin weights
@@ -423,9 +513,16 @@ def solveLayeredPoses(
         Joints whose max weight (including the joints they carry) is below this
         don't get solved, so they just follow their parents. Defaults to 0.3
     chunkSize : int, optional
-        How many targets to solve at once. Defaults to 64
+        The most targets to solve at once. Defaults to 64
+    threads : int, optional
+        How many chunks of targets to solve in parallel. The chunks are made
+        smaller if needed so every thread gets one. Use 1 to solve on the calling
+        thread. Defaults to 8, or the number of CPUs if that's lower. The fits are
+        mostly limited by memory bandwidth, so more threads than that tend to make
+        it slower
     progress : callable, optional
-        Called as ``progress(value, maximum, message)``
+        Called as ``progress(value, maximum, message)``. This is only ever called
+        from the calling thread
 
     Returns
     -------
@@ -465,7 +562,13 @@ def solveLayeredPoses(
             passes.append(SolvePass(p.name, jointDict, p.rotReg))
         solveJobs.append(SolveJob(job.name, passes))
 
-    # Targets with the same jobs get solved together
+    # Targets with the same jobs get solved together. Every target is solved
+    # independently, so the chunks can be made smaller to keep every thread busy.
+    # But each chunk has a fixed cost per joint, so they can't get too small
+    if threads is None:
+        threads = min(8, os.cpu_count() or 1)
+    threads = max(1, threads)
+    chunkSize = max(1, min(chunkSize, max(_MIN_CHUNK, -(-numShapes // threads))))
     groups: dict[tuple[int, ...], list[int]] = {}
     for s, jobIdxs in enumerate(shapeJobs):
         groups.setdefault(tuple(jobIdxs), []).append(s)
@@ -475,25 +578,31 @@ def solveLayeredPoses(
         for i in range(0, len(idxs), chunkSize)
     ]
 
-    out = np.empty((numShapes,) + jointMats.shape)
-    done = 0
-    for jobIdxs, idxs in chunks:
+    # Everything about the passes that doesn't depend on the shapes is shared by
+    # every chunk, so build it once up front
+    jointVerts = _jointVerts(restVerts, weights)
+    setups = [
+        [
+            _passSetup(p, parents, order, jointVerts, len(restVerts), minWeight)
+            for p in job.passes
+        ]
+        for job in solveJobs
+    ]
+
+    def solveChunk(jobIdxs, idxs):
+        """Run all the passes on one chunk, and get its world matrices"""
         prior = np.array(initLocal[idxs])
         local = prior.copy()
         tgts = targetVerts[idxs]
         for ji in jobIdxs:
-            for solvePass in solveJobs[ji].passes:
-                _progress(
-                    progress, done, numShapes, f"{solveJobs[ji].name}: {solvePass.name}"
-                )
+            for solvePass, setup in zip(solveJobs[ji].passes, setups[ji]):
                 local = _solvePass(
-                    restVerts,
                     tgts,
                     jointMats,
                     invRest,
                     parents,
-                    order,
-                    weights,
+                    jointVerts,
+                    setup,
                     local,
                     prior,
                     solvePass,
@@ -501,9 +610,27 @@ def solveLayeredPoses(
                     rotRegScale,
                     rotRadius,
                     priorReg,
-                    minWeight,
                 )
-        out[idxs] = worldMats(local, parents)
-        done += len(idxs)
+        return worldMats(local, parents)
+
+    out = np.empty((numShapes,) + jointMats.shape)
+    done = 0
+    _progress(progress, done, numShapes, "Solving poses")
+    if threads == 1 or len(chunks) == 1:
+        for jobIdxs, idxs in chunks:
+            out[idxs] = solveChunk(jobIdxs, idxs)
+            done += len(idxs)
+            _progress(progress, done, numShapes, "Solving poses")
+    else:
+        # Numpy releases the GIL for its heavy lifting, so threads work here
+        with ThreadPoolExecutor(max_workers=min(threads, len(chunks))) as pool:
+            futures = {
+                pool.submit(solveChunk, jobIdxs, idxs): idxs for jobIdxs, idxs in chunks
+            }
+            for future in as_completed(futures):
+                idxs = futures[future]
+                out[idxs] = future.result()
+                done += len(idxs)
+                _progress(progress, done, numShapes, "Solving poses")
     _progress(progress, numShapes, numShapes, "Done")
     return out
