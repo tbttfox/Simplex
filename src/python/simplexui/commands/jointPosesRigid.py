@@ -35,12 +35,16 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import pickle
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
+from multiprocessing import shared_memory
 from typing import Sequence
 
 import numpy as np
+import scipy.sparse
+from scipy.spatial.transform import Rotation
 
 from .jointPoses import (
     ProgressCallback,
@@ -48,7 +52,6 @@ from .jointPoses import (
     SolvePass,
     _jointOrder,
     _progress,
-    _rotToQuat,
     invAffine,
     localMats,
     toHomogeneous,
@@ -56,90 +59,94 @@ from .jointPoses import (
 )
 
 
-def _quatToRot(q: np.ndarray) -> np.ndarray:
-    """Convert xyzw quaternions to column-convention 3x3 rotation matrices"""
-    x, y, z, w = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
-    ret = np.empty(q.shape[:-1] + (3, 3))
-    ret[..., 0, 0] = 1 - 2 * (y * y + z * z)
-    ret[..., 0, 1] = 2 * (x * y - z * w)
-    ret[..., 0, 2] = 2 * (x * z + y * w)
-    ret[..., 1, 0] = 2 * (x * y + z * w)
-    ret[..., 1, 1] = 1 - 2 * (x * x + z * z)
-    ret[..., 1, 2] = 2 * (y * z - x * w)
-    ret[..., 2, 0] = 2 * (x * z - y * w)
-    ret[..., 2, 1] = 2 * (y * z + x * w)
-    ret[..., 2, 2] = 1 - 2 * (x * x + y * y)
-    return ret
-
-
-def _quatMul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Multiply xyzw quaternions so the result rotates by b, then by a"""
-    ax, ay, az, aw = a[..., 0], a[..., 1], a[..., 2], a[..., 3]
-    bx, by, bz, bw = b[..., 0], b[..., 1], b[..., 2], b[..., 3]
-    return np.stack(
-        (
-            aw * bx + ax * bw + ay * bz - az * by,
-            aw * by - ax * bz + ay * bw + az * bx,
-            aw * bz + ax * by - ay * bx + az * bw,
-            aw * bw - ax * bx - ay * by - az * bz,
-        ),
-        axis=-1,
-    )
-
-
-def _extractRotation(a: np.ndarray, q: np.ndarray, iterations: int = 8) -> np.ndarray:
+def _extractRotation(a: np.ndarray, r: np.ndarray, iterations: int = 8) -> np.ndarray:
     """Find the rotations that maximize ``trace(R.T @ A)``
 
     This is the iterative method from "A Robust Method to Extract the Rotational
     Part of Deformations" (Muller et al. 2016). Unlike an SVD, it walks
     continuously from the starting rotation, so it never jumps to a far away
-    (flipped) answer. And it doesn't make any LAPACK calls
+    (flipped) answer
 
     Parameters
     ----------
     a : np.ndarray
-        A (..., 3, 3) array of column-convention covariance matrices
-    q : np.ndarray
-        A (..., 4) array of xyzw quaternions to start from
+        A (S, 3, 3) array of column-convention covariance matrices
+    r : np.ndarray
+        The (S, 3, 3) column-convention rotations to start from
     iterations : int, optional
         The max number of iterations
 
     Returns
     -------
     : np.ndarray
-        A (..., 4) array of xyzw quaternions
+        The (S, 3, 3) column-convention rotations
     """
     for _ in range(iterations):
-        r = _quatToRot(q)
-        # The sum of the cross products of the columns of r and a
-        # np.cross has a lot of overhead, so write it out
+        # The sum of the cross products of the columns of r and a is the
+        # skew-symmetric part of a @ r.T, and their dot products are its trace
+        m = a @ np.swapaxes(r, -1, -2)
         num = np.stack(
-            (
-                (r[..., 1, :] * a[..., 2, :] - r[..., 2, :] * a[..., 1, :]).sum(-1),
-                (r[..., 2, :] * a[..., 0, :] - r[..., 0, :] * a[..., 2, :]).sum(-1),
-                (r[..., 0, :] * a[..., 1, :] - r[..., 1, :] * a[..., 0, :]).sum(-1),
-            ),
+            (m[:, 2, 1] - m[:, 1, 2], m[:, 0, 2] - m[:, 2, 0], m[:, 1, 0] - m[:, 0, 1]),
             axis=-1,
         )
-        den = np.abs((r * a).sum(axis=(-1, -2))) + 1.0e-12
-        omega = num / den[..., None]
-        angle = np.linalg.norm(omega, axis=-1)
-        if angle.max() < 1.0e-9:
+        omega = num / (np.abs(np.trace(m, axis1=-2, axis2=-1)) + 1.0e-12)[:, None]
+        if np.linalg.norm(omega, axis=-1).max() < 1.0e-9:
             break
-        with np.errstate(divide="ignore", invalid="ignore"):
-            scale = np.where(angle > 1.0e-15, np.sin(angle / 2) / angle, 0.5)
-        dq = np.concatenate(
-            (omega * scale[..., None], np.cos(angle / 2)[..., None]), -1
-        )
-        q = _quatMul(dq, q)
-        q /= np.linalg.norm(q, axis=-1, keepdims=True)
-    return q
+        r = Rotation.from_rotvec(omega).as_matrix() @ r
+    return r
+
+
+@dataclass
+class _Moments:
+    """The weighted moments of the points a free joint moves
+
+    The points don't change during a pass, so these get built once, and each fit
+    only has to deal with the moments of its targets. The data is weighted by the
+    squared skin weights (``D``), and the prior by ``priorReg`` times the skin
+    weights (``P``). All of them are (S, ...) arrays in rest space
+
+    Attributes
+    ----------
+    sumD, sumP : float
+        The total weights
+    firstD, firstP : np.ndarray
+        The (S, 3) weighted sums of the points
+    secondD, secondP : np.ndarray
+        The (S, 3, 3) weighted sums of the outer products of the points
+    """
+
+    sumD: float
+    sumP: float
+    firstD: np.ndarray
+    firstP: np.ndarray
+    secondD: np.ndarray
+    secondP: np.ndarray
+
+
+def _moments(h: np.ndarray, vertWeights: np.ndarray, priorReg: float) -> _Moments:
+    """Get the moments of the (S, n, 4) homogeneous points that are premultiplied by
+    their (n,) skin weights"""
+    wPts = h[..., :3]
+    wPtsT = np.swapaxes(wPts, -1, -2)
+    return _Moments(
+        sumD=float(vertWeights @ vertWeights),
+        sumP=priorReg * float(vertWeights.sum()),
+        firstD=vertWeights @ wPts,
+        firstP=priorReg * wPts.sum(axis=1),
+        secondD=wPtsT @ wPts,
+        secondP=priorReg * (wPtsT @ (wPts / vertWeights[:, None])),
+    )
+
+
+def _outer(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """The outer products of two (S, 3) arrays"""
+    return a[:, :, None] * b[:, None, :]
 
 
 def _fitRigid(
-    pts: np.ndarray,
-    ptWeights: np.ndarray,
-    targets: np.ndarray,
+    m: _Moments,
+    dataSum: np.ndarray,
+    dataCross: np.ndarray,
     curMat: np.ndarray,
     priorMat: np.ndarray,
     lockMat: np.ndarray,
@@ -147,19 +154,25 @@ def _fitRigid(
     translate: bool,
     rotReg: float,
     rotRadius: float,
-    priorReg: float,
+    weightSum: float,
     pivot: np.ndarray,
 ) -> np.ndarray:
-    """Fit a rigid row-convention matrix moving the points onto the targets
+    """Fit rigid row-convention matrices moving the points onto their targets
+
+    Every point ``x`` with skin weight ``w`` has a target ``r`` that ``w * x @ M``
+    should match, which is the same as ``x @ M`` matching ``r / w`` with a weight of
+    ``w**2``. Each point is also pulled toward ``x @ priorMat`` with a weight of
+    ``priorReg * w``, so that mostly affects points that the joint barely
+    influences. All of that only needs the moments of the points and targets
 
     Parameters
     ----------
-    pts : np.ndarray
-        The (S, n, 3) points to move
-    ptWeights : np.ndarray
-        The (n,) skin weight of each point
-    targets : np.ndarray
-        The (S, n, 3) positions that ``ptWeights * pts @ mat`` should match
+    m : _Moments
+        The moments of the points
+    dataSum : np.ndarray
+        The (S, 3) sums of ``w * r``
+    dataCross : np.ndarray
+        The (S, 3, 3) sums of ``w * outer(r, x)``
     curMat : np.ndarray
         The (S, 4, 4) current matrices. Their rotation is the starting point of the fit
     priorMat : np.ndarray
@@ -177,10 +190,8 @@ def _fitRigid(
         Regularize the rotations as if every point were at least this far from the
         center of rotation. Otherwise a joint that only moves a small cluster of
         points will take any stretching of the cluster as a big rotation
-    priorReg : float
-        The strength of the pull toward the prior matrices. This is weighted
-        linearly by the skin weights while the data is weighted by their square, so
-        it mostly affects points that the joint barely influences
+    weightSum : float
+        The sum of the skin weights
     pivot : np.ndarray
         The (3,) rest position of the joint
 
@@ -189,39 +200,47 @@ def _fitRigid(
     : np.ndarray
         The (S, 4, 4) fit matrices
     """
-    # Minimizing |w * (x @ M) - r|^2 is the same as minimizing w^2 * |x @ M - r/w|^2
-    dataW = ptWeights * ptWeights
-    priorW = priorReg * ptWeights
-    totW = dataW + priorW
-    priorPts = pts @ priorMat[:, :3, :3] + priorMat[:, None, 3, :3]
-    tgts = targets * ptWeights[None, :, None] + priorW[None, :, None] * priorPts
-    tgts /= totW[None, :, None]
+    priorRot, priorTrn = priorMat[:, :3, :3], priorMat[:, 3, :3]
+    sumW = m.sumD + m.sumP
+    srcSum = m.firstD + m.firstP
+    tgtSum = dataSum + (m.firstP[:, None] @ priorRot)[:, 0] + m.sumP * priorTrn
 
-    sumW = totW.sum()
     if translate:
-        ctrSrc = (totW @ pts) / sumW
-        ctrTgt = (totW @ tgts) / sumW
+        ctrSrc = srcSum / sumW
+        ctrTgt = tgtSum / sumW
     else:
-        ctrSrc = np.broadcast_to(pivot, (len(pts), 3))
+        ctrSrc = np.broadcast_to(pivot, srcSum.shape)
         ctrTgt = pivot @ lockMat[:, :3, :3] + lockMat[:, 3, :3]
 
     ret = lockMat.copy()
     if rotate:
-        src = pts - ctrSrc[:, None, :]
-        tgt = tgts - ctrTgt[:, None, :]
-        # Build the covariance in column-convention so its rotation is R.T
-        wSrc = src * totW[None, :, None]
-        cov = np.swapaxes(tgt, -1, -2) @ wSrc
-        covSrc = np.swapaxes(src, -1, -2) @ wSrc
-        priorRot = np.swapaxes(priorMat[:, :3, :3], -1, -2)
+        # The covariances of the centered points, in column-convention so their
+        # rotation is R.T
+        cross = (
+            dataCross
+            + np.swapaxes(priorRot, -1, -2) @ m.secondP
+            + _outer(priorTrn, m.firstP)
+        )
+        cov = (
+            cross
+            - _outer(tgtSum, ctrSrc)
+            - _outer(ctrTgt, srcSum)
+            + sumW * _outer(ctrTgt, ctrSrc)
+        )
+        covSrc = (
+            m.secondD
+            + m.secondP
+            - _outer(srcSum, ctrSrc)
+            - _outer(ctrSrc, srcSum)
+            + sumW * _outer(ctrSrc, ctrSrc)
+        )
         # This is weighted linearly by the skin weights while the data is weighted
         # by their square, so joints with little influence are harder to rotate
-        iso = np.eye(3) * (rotRadius * rotRadius * ptWeights.sum())
-        cov = cov + rotReg * (priorRot @ (covSrc + iso))
+        iso = np.eye(3) * (rotRadius * rotRadius * weightSum)
+        cov = cov + rotReg * (np.swapaxes(priorRot, -1, -2) @ (covSrc + iso))
 
-        startQ = _rotToQuat(np.swapaxes(curMat[:, :3, :3], -1, -2))
-        rot = np.swapaxes(_quatToRot(_extractRotation(cov, startQ)), -1, -2)
-        ret[:, :3, :3] = rot
+        rot = _extractRotation(cov, np.swapaxes(curMat[:, :3, :3], -1, -2))
+        ret[:, :3, :3] = np.swapaxes(rot, -1, -2)
     ret[:, 3, :3] = ctrTgt - (ctrSrc[:, None, :] @ ret[:, :3, :3])[:, 0]
     return ret
 
@@ -280,21 +299,41 @@ def _jointVerts(
     return ret
 
 
-def _skinSparse(
-    jointVerts: list[tuple[np.ndarray, np.ndarray]], numVerts: int, skin: np.ndarray
-) -> np.ndarray:
-    """Linear blend skin the rest points with the output of `_jointVerts`
+def _skinMatrix(
+    jointVerts: list[tuple[np.ndarray, np.ndarray]], numVerts: int
+) -> scipy.sparse.csr_array:
+    """Build the sparse (N, J * 4) matrix that linear blend skins the rest points
+
+    Multiplying it by the (J * 4, 3) stacked skinning matrices of a pose gives the
+    skinned points. Every row has the homogeneous rest position of its vertex,
+    premultiplied by the vertex's weight for each joint that influences it, which
+    is exactly what `_jointVerts` gives
+    """
+    rows = np.concatenate([np.repeat(idx, 4) for idx, _ in jointVerts])
+    cols = np.concatenate(
+        [
+            np.tile(np.arange(4) + 4 * k, len(idx))
+            for k, (idx, _) in enumerate(jointVerts)
+        ]
+    )
+    vals = np.concatenate([pts.ravel() for _, pts in jointVerts])
+    return scipy.sparse.csr_array(
+        (vals, (rows, cols)), shape=(numVerts, len(jointVerts) * 4)
+    )
+
+
+def _skinPoints(skinMat: scipy.sparse.csr_array, skin: np.ndarray) -> np.ndarray:
+    """Linear blend skin the rest points with the output of `_skinMatrix`
 
     Returns
     -------
     : np.ndarray
         The (S, N, 3) skinned points
     """
-    out = np.zeros((len(skin), numVerts, 3))
-    for k, (idx, pts) in enumerate(jointVerts):
-        if len(idx):
-            out[:, idx] += pts[None] @ skin[:, k, :, :3]
-    return out
+    numShapes, numJoints = skin.shape[:2]
+    mats = skin[..., :3].transpose(1, 2, 0, 3).reshape(numJoints * 4, numShapes * 3)
+    out = (skinMat @ mats).reshape(-1, numShapes, 3)
+    return np.ascontiguousarray(out.transpose(1, 0, 2))
 
 
 def _passSetup(
@@ -349,6 +388,7 @@ def _solvePass(
     invRest: np.ndarray,
     parents: Sequence[int],
     jointVerts: list[tuple[np.ndarray, np.ndarray]],
+    skinMat: scipy.sparse.csr_array,
     setup: _PassSetup,
     local: np.ndarray,
     priorLocal: np.ndarray,
@@ -373,13 +413,13 @@ def _solvePass(
     free, carrier = setup.free, setup.carrier
     if not free:
         return local
-    numShapes, numVerts = len(local), targetVerts.shape[1]
+    numShapes = len(local)
     skin = invRest[None] @ worldMats(local, parents)
 
     # For every free joint, build the homogeneous points it moves (premultiplied by
     # the skin weights). The carried joints' skin matrices are K @ skin[free] where K
     # stays constant, so those points can be pre-transformed by K
-    ptsH, pts3, tgts = {}, {}, {}
+    ptsH, wPtsT, moments, tgts = {}, {}, {}, {}
     for j in free:
         vIdx = setup.supports[j]
         invJ = invAffine(skin[:, j])
@@ -391,11 +431,12 @@ def _solvePass(
             else:
                 h[:, pos] += pts[None] @ (skin[:, k] @ invJ)
         ptsH[j] = h
-        pts3[j] = h[..., :3] / setup.vertWeights[j][None, :, None]
+        wPtsT[j] = np.ascontiguousarray(np.swapaxes(h[..., :3], -1, -2))
+        moments[j] = _moments(h, setup.vertWeights[j], priorReg)
         tgts[j] = targetVerts[:, vIdx]
 
     # The current skinned positions
-    pred = _skinSparse(jointVerts, numVerts, skin)
+    pred = _skinPoints(skinMat, skin)
     freeSkin = {j: skin[:, j].copy() for j in free}
     carrierOffset = {}
     for k, c in enumerate(carrier):
@@ -413,10 +454,21 @@ def _solvePass(
     rotReg = solvePass.rotReg * rotRegScale
     for _ in range(iterations):
         for j in free:
-            vIdx, h = setup.supports[j], ptsH[j]
-            vw = setup.vertWeights[j]
+            vIdx, vw, m = setup.supports[j], setup.vertWeights[j], moments[j]
             cur = freeSkin[j]
-            resid = tgts[j] - pred[:, vIdx] + h @ cur[..., :3]
+            curRot, curTrn = cur[:, :3, :3], cur[:, 3, :3]
+
+            # Each point's target is what's left over once every other joint has
+            # moved it, which is ``err + w * (x @ cur)`` for the current error. So
+            # the target moments are the error's moments plus the points' moments
+            # moved by cur
+            err = tgts[j] - pred[:, vIdx]
+            dataSum = vw @ err + (m.firstD[:, None] @ curRot)[:, 0] + m.sumD * curTrn
+            dataCross = (
+                np.swapaxes(wPtsT[j] @ err, -1, -2)
+                + np.swapaxes(curRot, -1, -2) @ m.secondD
+                + _outer(curTrn, m.firstD)
+            )
 
             # Where this joint would be if it kept its prior local transform,
             # or the local transform it started the pass with
@@ -427,9 +479,9 @@ def _solvePass(
 
             rotate, translate = solvePass.joints[j]
             new = _fitRigid(
-                pts3[j],
-                vw,
-                resid,
+                m,
+                dataSum,
+                dataCross,
                 cur,
                 prior,
                 lock,
@@ -437,10 +489,10 @@ def _solvePass(
                 translate,
                 rotReg,
                 rotRadius,
-                priorReg,
+                float(vw.sum()),
                 jointMats[j, 3, :3],
             )
-            pred[:, vIdx] += h @ (new - cur)[..., :3]
+            pred[:, vIdx] += ptsH[j] @ (new - cur)[..., :3]
             freeSkin[j] = new
 
     for k in range(len(parents)):
@@ -481,6 +533,7 @@ def _solveChunk(
                 shared["invRest"],
                 parents,
                 shared["jointVerts"],
+                shared["skinMat"],
                 setup,
                 local,
                 prior,
@@ -493,16 +546,30 @@ def _solveChunk(
     return worldMats(local, parents)
 
 
-def _initWorker(shared: dict) -> None:
-    """Store the shared data in a worker process"""
-    _SHARED.update(shared)
+def _attachMemory(name: str) -> shared_memory.SharedMemory:
+    """Attach to shared memory that another process owns"""
+    # Before python 3.13, attaching registers the memory with the resource tracker
+    # on posix, which would delete it when this worker exits
+    kwargs = {"track": False} if sys.version_info >= (3, 13) else {}
+    return shared_memory.SharedMemory(name=name, **kwargs)
+
+
+def _initWorker(dataName: str, dataSize: int, tgtName: str, tgtShape: tuple) -> None:
+    """Load the shared data in a worker process. See `solveLayeredPoses`"""
+    dataMem = _attachMemory(dataName)
+    _SHARED.update(pickle.loads(dataMem.buf[:dataSize]))
+    dataMem.close()
+    # The targets get read in place, so keep their memory open
+    tgtMem = _attachMemory(tgtName)
+    _SHARED["targetMem"] = tgtMem
+    _SHARED["targets"] = np.ndarray(tgtShape, dtype=np.float64, buffer=tgtMem.buf)
 
 
 def _solveChunkInWorker(
-    jobIdxs: Sequence[int], prior: np.ndarray, tgts: np.ndarray
+    jobIdxs: Sequence[int], idxs: Sequence[int], prior: np.ndarray
 ) -> np.ndarray:
     """Run `_solveChunk` in a worker process with its shared data"""
-    return _solveChunk(_SHARED, jobIdxs, prior, tgts)
+    return _solveChunk(_SHARED, jobIdxs, prior, _SHARED["targets"][idxs])
 
 
 def _spawnContext():
@@ -670,6 +737,7 @@ def solveLayeredPoses(
         invRest=invRest,
         parents=parents,
         jointVerts=jointVerts,
+        skinMat=_skinMatrix(jointVerts, len(restVerts)),
         solveJobs=solveJobs,
         setups=setups,
         iterations=iterations,
@@ -681,29 +749,39 @@ def solveLayeredPoses(
     out = np.empty((numShapes,) + jointMats.shape)
     done = 0
     _progress(progress, done, numShapes, "Solving poses")
-    if processes == 1 or len(chunks) == 1:
+    if processes == 1 or len(chunks) <= 1:
         for jobIdxs, idxs in chunks:
             out[idxs] = _solveChunk(
                 shared, jobIdxs, np.array(initLocal[idxs]), targetVerts[idxs]
             )
             done += len(idxs)
             _progress(progress, done, numShapes, "Solving poses")
-    else:
-        # The fits make lots of small numpy calls, so threads spend most of their
-        # time waiting on the GIL. Separate processes don't have that problem, and
-        # the shared data only gets sent to each of them once
+        _progress(progress, numShapes, numShapes, "Done")
+        return out
+
+    # The fits make lots of small numpy calls, so threads spend most of their time
+    # waiting on the GIL. Separate processes don't have that problem.
+    # The workers start one at a time, and each one blocks until the last has read
+    # its startup arguments. So the shared data and targets go in shared memory
+    # instead, and the workers all start loading them at once
+    data = pickle.dumps(shared, protocol=pickle.HIGHEST_PROTOCOL)
+    dataMem = shared_memory.SharedMemory(create=True, size=len(data))
+    tgtMem = shared_memory.SharedMemory(create=True, size=targetVerts.nbytes)
+    try:
+        dataMem.buf[: len(data)] = data
+        tgtView = np.ndarray(targetVerts.shape, dtype=np.float64, buffer=tgtMem.buf)
+        tgtView[:] = targetVerts
+        del tgtView
+
         with ProcessPoolExecutor(
             max_workers=min(processes, len(chunks)),
             mp_context=_spawnContext(),
             initializer=_initWorker,
-            initargs=(shared,),
+            initargs=(dataMem.name, len(data), tgtMem.name, targetVerts.shape),
         ) as pool:
             futures = {
                 pool.submit(
-                    _solveChunkInWorker,
-                    jobIdxs,
-                    np.array(initLocal[idxs]),
-                    targetVerts[idxs],
+                    _solveChunkInWorker, jobIdxs, idxs, np.array(initLocal[idxs])
                 ): idxs
                 for jobIdxs, idxs in chunks
             }
@@ -712,5 +790,9 @@ def solveLayeredPoses(
                 out[idxs] = future.result()
                 done += len(idxs)
                 _progress(progress, done, numShapes, "Solving poses")
+    finally:
+        for mem in (dataMem, tgtMem):
+            mem.close()
+            mem.unlink()
     _progress(progress, numShapes, numShapes, "Done")
     return out
