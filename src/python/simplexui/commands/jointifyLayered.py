@@ -116,7 +116,7 @@ def main():
     parser.add_argument("--rot-reg-scale", type=float, help="Multiplies each pass's rotReg. 0 turns it off")
     parser.add_argument("--rot-radius", type=float, help="Rigid solver only. The min point distance for the rotation regularization")
     parser.add_argument("--prior-reg", type=float, help="Rigid solver only. How much joints are held in place where they have little influence")
-    parser.add_argument("--threads", type=int, help="Rigid solver only. How many chunks to solve in parallel. Defaults to 8")
+    parser.add_argument("--processes", type=int, help="Rigid solver only. How many processes solve in parallel. Defaults to 16")
     parser.add_argument("--min-weight", type=float)
     parser.add_argument("--iterations", type=int, help="Dem Bones transformation iterations per pass")
     parser.add_argument("--chunk-size", type=int, help="How many shapes to give Dem Bones at once")
@@ -137,7 +137,7 @@ def main():
         rotRegScale=args.rot_reg_scale,
         rotRadius=args.rot_radius,
         priorReg=args.prior_reg,
-        threads=args.threads,
+        processes=args.processes,
     )
 
 

@@ -33,8 +33,10 @@ from the current rotation, so it never flips to a far away answer
 
 from __future__ import annotations
 
+import multiprocessing
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -224,8 +226,11 @@ def _fitRigid(
     return ret
 
 
-# The smallest chunk of targets worth giving to its own thread
-_MIN_CHUNK = 32
+# The smallest chunk of targets worth giving to its own process
+_MIN_CHUNK = 8
+
+# The data every chunk shares, set in each worker process by `_initWorker`
+_SHARED: dict = {}
 
 
 @dataclass
@@ -444,6 +449,78 @@ def _solvePass(
     return localMats(jointMats[None] @ skin, parents)
 
 
+def _solveChunk(
+    shared: dict, jobIdxs: Sequence[int], prior: np.ndarray, tgts: np.ndarray
+) -> np.ndarray:
+    """Run all the passes on one chunk of targets
+
+    Parameters
+    ----------
+    shared : dict
+        The data that every chunk shares. See `solveLayeredPoses`
+    jobIdxs : [int, ...]
+        The jobs to run on this chunk, in order
+    prior : np.ndarray
+        The (S, J, 4, 4) local matrices to start from
+    tgts : np.ndarray
+        The (S, N, 3) absolute target positions
+
+    Returns
+    -------
+    : np.ndarray
+        The (S, J, 4, 4) world matrices of each joint for each target
+    """
+    parents = shared["parents"]
+    local = prior.copy()
+    for ji in jobIdxs:
+        passes = shared["solveJobs"][ji].passes
+        for solvePass, setup in zip(passes, shared["setups"][ji]):
+            local = _solvePass(
+                tgts,
+                shared["jointMats"],
+                shared["invRest"],
+                parents,
+                shared["jointVerts"],
+                setup,
+                local,
+                prior,
+                solvePass,
+                shared["iterations"],
+                shared["rotRegScale"],
+                shared["rotRadius"],
+                shared["priorReg"],
+            )
+    return worldMats(local, parents)
+
+
+def _initWorker(shared: dict) -> None:
+    """Store the shared data in a worker process"""
+    _SHARED.update(shared)
+
+
+def _solveChunkInWorker(
+    jobIdxs: Sequence[int], prior: np.ndarray, tgts: np.ndarray
+) -> np.ndarray:
+    """Run `_solveChunk` in a worker process with its shared data"""
+    return _solveChunk(_SHARED, jobIdxs, prior, tgts)
+
+
+def _spawnContext():
+    """Get a multiprocessing context that starts fresh python processes
+
+    Spawned processes run sys.executable, but inside Maya that's the Maya
+    application itself, so they need to run mayapy instead
+    """
+    ctx = multiprocessing.get_context("spawn")
+    exeDir, exeName = os.path.split(sys.executable)
+    if os.path.splitext(exeName)[0].lower() == "maya":
+        mayapy = os.path.join(exeDir, "mayapy.exe" if os.name == "nt" else "mayapy")
+        if not os.path.isfile(mayapy):
+            raise RuntimeError(f"Can't find mayapy to run the solve with: {mayapy}")
+        ctx.set_executable(mayapy)
+    return ctx
+
+
 def solveLayeredPoses(
     restVerts: np.ndarray,
     targetVerts: np.ndarray,
@@ -460,7 +537,7 @@ def solveLayeredPoses(
     priorReg: float = 0.05,
     minWeight: float = 0.3,
     chunkSize: int = 64,
-    threads: int | None = None,
+    processes: int | None = None,
     progress: ProgressCallback | None = None,
 ) -> np.ndarray:
     """Solve joint poses in layers with fixed skin weights
@@ -514,15 +591,14 @@ def solveLayeredPoses(
         don't get solved, so they just follow their parents. Defaults to 0.3
     chunkSize : int, optional
         The most targets to solve at once. Defaults to 64
-    threads : int, optional
-        How many chunks of targets to solve in parallel. The chunks are made
-        smaller if needed so every thread gets one. Use 1 to solve on the calling
-        thread. Defaults to 8, or the number of CPUs if that's lower. The fits are
-        mostly limited by memory bandwidth, so more threads than that tend to make
-        it slower
+    processes : int, optional
+        How many worker processes solve chunks of targets in parallel. The chunks
+        are made smaller if needed so every process gets one, as long as they
+        have at least `_MIN_CHUNK` targets. Use 1 to solve in this process.
+        Defaults to 16, or the number of CPUs if that's lower
     progress : callable, optional
         Called as ``progress(value, maximum, message)``. This is only ever called
-        from the calling thread
+        from this process's calling thread
 
     Returns
     -------
@@ -563,12 +639,12 @@ def solveLayeredPoses(
         solveJobs.append(SolveJob(job.name, passes))
 
     # Targets with the same jobs get solved together. Every target is solved
-    # independently, so the chunks can be made smaller to keep every thread busy.
+    # independently, so the chunks can be made smaller to keep every process busy.
     # But each chunk has a fixed cost per joint, so they can't get too small
-    if threads is None:
-        threads = min(8, os.cpu_count() or 1)
-    threads = max(1, threads)
-    chunkSize = max(1, min(chunkSize, max(_MIN_CHUNK, -(-numShapes // threads))))
+    if processes is None:
+        processes = min(16, os.cpu_count() or 1)
+    processes = max(1, processes)
+    chunkSize = max(1, min(chunkSize, max(_MIN_CHUNK, -(-numShapes // processes))))
     groups: dict[tuple[int, ...], list[int]] = {}
     for s, jobIdxs in enumerate(shapeJobs):
         groups.setdefault(tuple(jobIdxs), []).append(s)
@@ -589,43 +665,47 @@ def solveLayeredPoses(
         for job in solveJobs
     ]
 
-    def solveChunk(jobIdxs, idxs):
-        """Run all the passes on one chunk, and get its world matrices"""
-        prior = np.array(initLocal[idxs])
-        local = prior.copy()
-        tgts = targetVerts[idxs]
-        for ji in jobIdxs:
-            for solvePass, setup in zip(solveJobs[ji].passes, setups[ji]):
-                local = _solvePass(
-                    tgts,
-                    jointMats,
-                    invRest,
-                    parents,
-                    jointVerts,
-                    setup,
-                    local,
-                    prior,
-                    solvePass,
-                    iterations,
-                    rotRegScale,
-                    rotRadius,
-                    priorReg,
-                )
-        return worldMats(local, parents)
+    shared = dict(
+        jointMats=jointMats,
+        invRest=invRest,
+        parents=parents,
+        jointVerts=jointVerts,
+        solveJobs=solveJobs,
+        setups=setups,
+        iterations=iterations,
+        rotRegScale=rotRegScale,
+        rotRadius=rotRadius,
+        priorReg=priorReg,
+    )
 
     out = np.empty((numShapes,) + jointMats.shape)
     done = 0
     _progress(progress, done, numShapes, "Solving poses")
-    if threads == 1 or len(chunks) == 1:
+    if processes == 1 or len(chunks) == 1:
         for jobIdxs, idxs in chunks:
-            out[idxs] = solveChunk(jobIdxs, idxs)
+            out[idxs] = _solveChunk(
+                shared, jobIdxs, np.array(initLocal[idxs]), targetVerts[idxs]
+            )
             done += len(idxs)
             _progress(progress, done, numShapes, "Solving poses")
     else:
-        # Numpy releases the GIL for its heavy lifting, so threads work here
-        with ThreadPoolExecutor(max_workers=min(threads, len(chunks))) as pool:
+        # The fits make lots of small numpy calls, so threads spend most of their
+        # time waiting on the GIL. Separate processes don't have that problem, and
+        # the shared data only gets sent to each of them once
+        with ProcessPoolExecutor(
+            max_workers=min(processes, len(chunks)),
+            mp_context=_spawnContext(),
+            initializer=_initWorker,
+            initargs=(shared,),
+        ) as pool:
             futures = {
-                pool.submit(solveChunk, jobIdxs, idxs): idxs for jobIdxs, idxs in chunks
+                pool.submit(
+                    _solveChunkInWorker,
+                    jobIdxs,
+                    np.array(initLocal[idxs]),
+                    targetVerts[idxs],
+                ): idxs
+                for jobIdxs, idxs in chunks
             }
             for future in as_completed(futures):
                 idxs = futures[future]
