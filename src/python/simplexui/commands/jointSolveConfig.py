@@ -51,7 +51,9 @@ The file looks like this::
 * ``defaultJobs`` are the jobs every shape runs, in order
 * ``shapeJobs`` replaces the default jobs for specific simplex shapes, by name
 * ``settings`` are passed to `jointPoses.solveLayeredPoses`
-  (and ``weightRounds`` to `simplexJoints.jointifySimplexLayered`)
+  (and ``weightRounds`` to `simplexJoints.jointifySimplexLayered`).
+  ``"poseSolver": "rigid"`` uses `jointPosesRigid.solveLayeredPoses` instead, which
+  also takes ``rotRadius`` and ``priorReg``, and respects the ``r``/``t`` flags
 
 Joints that aren't in the skeleton being solved are skipped, so the same file
 works with a reduced skeleton
