@@ -39,6 +39,7 @@ import numpy as np
 from pysimplex import PySimplex
 
 from ..items import Simplex
+from . import jointPosesRigid
 from .alembicCommon import readSmpx, unflattenFaces
 from .applyCorrectives import buildFullShapes, collapseFullShapes, writeSimplex
 from .jointPoses import (
@@ -339,6 +340,7 @@ def solveSimplexPoses(
     jobs: list[SolveJob],
     shapeJobs: list[list[int]],
     lockJoints: list[int],
+    poseSolver: str = "demBones",
     **solveKwargs,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Solve the layered joint poses for the shapes of a simplex system
@@ -346,6 +348,15 @@ def solveSimplexPoses(
     The shapes are solved in order of their combo depth. Each combo starts from the
     pose that the rig would give it without any correction of its own, and its
     rotations are regularized toward that pose. That keeps the combo corrections small
+
+    Parameters
+    ----------
+    poseSolver : str, optional
+        Which layered solve to use. Either "demBones" for
+        `jointPoses.solveLayeredPoses`, or "rigid" for
+        `jointPosesRigid.solveLayeredPoses`. Defaults to "demBones"
+    **solveKwargs
+        Passed to the chosen solve
 
     Returns
     -------
@@ -356,6 +367,16 @@ def solveSimplexPoses(
         rotations are unwrapped to be as close as possible to the rotations the
         rig would give each shape without any correction of its own
     """
+    solvers = {
+        "demBones": solveLayeredPoses,
+        "rigid": jointPosesRigid.solveLayeredPoses,
+    }
+    if poseSolver not in solvers:
+        raise ValueError(
+            f"Unknown poseSolver {poseSolver!r}. Use one of {sorted(solvers)}"
+        )
+    solve = solvers[poseSolver]
+
     restLocal = localMats(jointMats, parents)
     indexByShape = {s: i for i, s in enumerate(simplex.shapes)}
     deltaParams = np.zeros((len(simplex.shapes), len(jointMats), 4, 3))
@@ -373,7 +394,7 @@ def solveSimplexPoses(
         print(f"{now}: Solving {len(idxs)} shapes at depth {depth}")
         vecs = np.array([vecByShape[shapes[i]] for i in idxs])
         base = np.tensordot(vecs, deltaParams, axes=1)
-        poses = solveLayeredPoses(
+        poses = solve(
             restPts,
             targets[idxs],
             jointMats,
@@ -471,7 +492,8 @@ def jointifySimplexLayered(
     pBar : QProgressDialog, optional
         An optional progress dialog
     **solveKwargs
-        Passed to jointPoses.solveLayeredPoses
+        Passed to `solveSimplexPoses`. Use ``poseSolver="rigid"`` to solve with
+        jointPosesRigid.solveLayeredPoses instead of jointPoses.solveLayeredPoses
 
     Returns
     -------
