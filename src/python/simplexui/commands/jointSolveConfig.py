@@ -53,13 +53,21 @@ The file looks like this::
 * ``ignoreVerts`` is an optional list of vertex indices that the shapes don't
   apply to, like the inside of the mouth. They aren't used to fit the poses or
   the weights. See `simplexJoints.jointifySimplexLayered`
-* ``settings`` are passed to `jointPoses.solveLayeredPoses`
-  (and ``weightRounds`` to `simplexJoints.jointifySimplexLayered`).
-  ``"poseSolver": "rigid"`` uses `jointPosesRigid.solveLayeredPoses` instead, which
-  also takes ``rotRadius`` and ``priorReg``, and respects the ``r``/``t`` flags.
-  ``"weightSolver": "smooth"`` solves the weights with
-  `jointWeights.solveSmoothWeights` instead of Dem Bones, and ``weightKwargs``
-  are passed to whichever one is used
+* ``settings`` are passed to `simplexJoints.jointifySimplexLayered`. That's
+  ``weightRounds``, ``poseSolver``, ``weightSolver``, ``weightSmoothIterations``,
+  and the settings of whichever pose and weight solvers they pick, all side by
+  side. For example::
+
+      "settings": {
+          "poseSolver": "rigid", "iterations": 6, "minWeight": 0.3,
+          "weightSolver": "smooth", "weightRounds": 3,
+          "smoothness": 10.0, "maxInfluences": 8, "candidates": 12
+      }
+
+  ``"poseSolver": "rigid"`` uses `jointPosesRigid.solveLayeredPoses`, which also
+  takes ``rotRadius`` and ``priorReg``, and respects the ``r``/``t`` flags.
+  ``"weightSolver": "smooth"`` uses `jointWeights.solveSmoothWeights` instead of
+  Dem Bones. A setting that the chosen solvers don't take is an error
 
 Joints that aren't in the skeleton being solved are skipped, so the same file
 works with a reduced skeleton
@@ -104,7 +112,12 @@ def solveKwargsFromConfig(rawconfig: dict | str) -> dict:
     kwargs['parents'] = parIdxs
     kwargs['lockJoints'] = lockIdxs
     if "ignoreVerts" in config:
-        kwargs["ignoreVerts"] = [int(i) for i in config["ignoreVerts"]]
+        kwargs["ignoreVerts"] = config["ignoreVerts"]
+    elif "ignoreRanges" in config:
+        ivs = []
+        for start, end in config["ignoreRanges"]:
+            ivs.extend(range(start, end))
+        kwargs["ignoreVerts"] = ivs
 
     jobs, jobIndexByName = [], {}
     missing = set()

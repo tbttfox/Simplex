@@ -25,6 +25,7 @@ Outputs:
 from __future__ import annotations
 
 import argparse
+import datetime
 import os
 import time
 import numpy as np
@@ -99,7 +100,9 @@ def jointifyLayered(
     )
     writePoses(inSmpx, jointData, outBase + "_poses.npz")
     print(f"\nWrote {outSmpx}, {outBase}.npz, {outBase}_poses.npz")
-    print(f"Joint fit RMSE {jointData.rmse:.5f}. Took {time.time() - start:.0f}s")
+
+    delta = datetime.timedelta(seconds=round(time.time() - start))
+    print(f"Joint fit RMSE {jointData.rmse:.5f}. Took {delta}")
 
 
 def main():
@@ -113,12 +116,16 @@ def main():
     parser.add_argument("--weights", help="A .npy of (N, J) starting skin weights")
     parser.add_argument("--weight-rounds", type=int, help="How many times to re-solve the weights. 0 keeps --weights")
     parser.add_argument("--weight-solver", choices=["demBones", "smooth"], help="How to solve the weights")
+    parser.add_argument("--weight-smooth-iterations", type=int, help="How many times to smooth the final weights before building the residuals. Defaults to 3")
+    parser.add_argument("--smoothness", type=float, help="Smooth weight solver only. How strongly the weights are smoothed")
+    parser.add_argument("--max-influences", type=int, help="The max number of joints per vertex")
+    parser.add_argument("--candidates", type=int, help="Smooth weight solver only. How many of each vertex's closest joints it can pick from")
     parser.add_argument("--pose-solver", choices=["demBones", "rigid"], help="Which layered solve to use")
     parser.add_argument("--rot-reg-scale", type=float, help="Multiplies each pass's rotReg. 0 turns it off")
     parser.add_argument("--rot-radius", type=float, help="Rigid solver only. The min point distance for the rotation regularization")
     parser.add_argument("--prior-reg", type=float, help="Rigid solver only. How much joints are held in place where they have little influence")
     parser.add_argument("--processes", type=int, help="Rigid solver only. How many processes solve in parallel. Defaults to 16")
-    parser.add_argument("--min-weight", type=float)
+    parser.add_argument("--min-weight", type=float, help="Bone weighs under this value will be pruned")
     parser.add_argument("--iterations", type=int, help="Dem Bones transformation iterations per pass")
     parser.add_argument("--chunk-size", type=int, help="How many shapes to give Dem Bones at once")
     args = parser.parse_args()
@@ -132,6 +139,10 @@ def main():
         args.weights,
         weightRounds=args.weight_rounds,
         weightSolver=args.weight_solver,
+        weightSmoothIterations=args.weight_smooth_iterations,
+        smoothness=args.smoothness,
+        maxInfluences=args.max_influences,
+        candidates=args.candidates,
         minWeight=args.min_weight,
         iterations=args.iterations,
         chunkSize=args.chunk_size,

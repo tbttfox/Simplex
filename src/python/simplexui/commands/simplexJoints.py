@@ -31,6 +31,7 @@ Traversal shapes are left alone. They keep their original deltas, and get no joi
 from __future__ import annotations
 
 import datetime
+import inspect
 import itertools
 import os
 from dataclasses import dataclass, field
@@ -57,7 +58,7 @@ from .jointPoses import (
     unwrapAxisAngle,
     worldMats,
 )
-from .jointWeights import skinRmse, solveSmoothWeights
+from .jointWeights import skinRmse, smoothWeights, solveSmoothWeights
 
 
 @dataclass
@@ -328,6 +329,83 @@ def _shapeDepths(simplex: Simplex) -> dict:
     return depths
 
 
+# The layered pose solvers, by their poseSolver setting
+_POSE_SOLVERS = {
+    "demBones": solveLayeredPoses,
+    "rigid": jointPosesRigid.solveLayeredPoses,
+}
+
+# The weight solvers, by their weightSolver setting
+_WEIGHT_SOLVERS = {
+    "demBones": solveSkinWeights,
+    "smooth": solveSmoothWeights,
+}
+
+# The arguments that get filled in by the jointify itself, not by the settings
+_POSE_ARGS = {
+    "restVerts",
+    "targetVerts",
+    "jointMats",
+    "parents",
+    "weights",
+    "jobs",
+    "shapeJobs",
+    "initLocal",
+    "lockJoints",
+    "ignoreVerts",
+    "progress",
+}
+_WEIGHT_ARGS = {
+    "restVerts",
+    "targetVerts",
+    "jointMats",
+    "poseMats",
+    "faces",
+    "weights",
+    "joints",
+    "lockWeights",
+    "ignoreVerts",
+}
+
+
+def _settingNames(func, filled: set[str]) -> set[str]:
+    """Get the names of the settings a solver takes"""
+    return set(inspect.signature(func).parameters) - filled
+
+
+def _splitSettings(
+    settings: dict, poseSolver: str, weightSolver: str
+) -> tuple[dict, dict]:
+    """Split the settings between the pose solver and the weight solver
+
+    Raises
+    ------
+    ValueError
+        If a solver name is unknown, or a setting doesn't belong to either solver
+    """
+    if poseSolver not in _POSE_SOLVERS:
+        raise ValueError(
+            f"Unknown poseSolver {poseSolver!r}. Use one of {sorted(_POSE_SOLVERS)}"
+        )
+    if weightSolver not in _WEIGHT_SOLVERS:
+        raise ValueError(
+            f"Unknown weightSolver {weightSolver!r}. "
+            f"Use one of {sorted(_WEIGHT_SOLVERS)}"
+        )
+    poseNames = _settingNames(_POSE_SOLVERS[poseSolver], _POSE_ARGS)
+    weightNames = _settingNames(_WEIGHT_SOLVERS[weightSolver], _WEIGHT_ARGS)
+    unknown = sorted(set(settings) - poseNames - weightNames)
+    if unknown:
+        raise ValueError(
+            f"Unknown settings {unknown}. The {poseSolver!r} pose solver takes "
+            f"{sorted(poseNames)}, and the {weightSolver!r} weight solver takes "
+            f"{sorted(weightNames)}"
+        )
+    pose = {k: v for k, v in settings.items() if k in poseNames}
+    weight = {k: v for k, v in settings.items() if k in weightNames}
+    return pose, weight
+
+
 def solveSimplexPoses(
     simplex: Simplex,
     shapes: list,
@@ -367,15 +445,11 @@ def solveSimplexPoses(
         rotations are unwrapped to be as close as possible to the rotations the
         rig would give each shape without any correction of its own
     """
-    solvers = {
-        "demBones": solveLayeredPoses,
-        "rigid": jointPosesRigid.solveLayeredPoses,
-    }
-    if poseSolver not in solvers:
+    if poseSolver not in _POSE_SOLVERS:
         raise ValueError(
-            f"Unknown poseSolver {poseSolver!r}. Use one of {sorted(solvers)}"
+            f"Unknown poseSolver {poseSolver!r}. Use one of {sorted(_POSE_SOLVERS)}"
         )
-    solve = solvers[poseSolver]
+    solve = _POSE_SOLVERS[poseSolver]
 
     restLocal = localMats(jointMats, parents)
     indexByShape = {s: i for i, s in enumerate(simplex.shapes)}
@@ -442,11 +516,12 @@ def jointifySimplexLayered(
     lockJoints: list[int] | None = None,
     weights: np.ndarray | None = None,
     weightRounds: int = 2,
+    poseSolver: str = "demBones",
     weightSolver: str = "demBones",
-    weightKwargs: dict | None = None,
+    weightSmoothIterations: int = 3,
     ignoreVerts: list[int] | None = None,
     pBar=None,
-    **solveKwargs,
+    **settings,
 ):
     """Split a simplex system into joint poses, skin weights, and residual shapes
     using a layered solve with fixed skin weights. See `jointPoses.solveLayeredPoses`
@@ -487,12 +562,19 @@ def jointifySimplexLayered(
     weightRounds : int, optional
         The number of times to solve for new weights. Use 0 to keep the given
         weights. Defaults to 2
+    poseSolver : str, optional
+        How to solve the poses. Either "demBones" for
+        `jointPoses.solveLayeredPoses`, or "rigid" for
+        `jointPosesRigid.solveLayeredPoses`. Defaults to "demBones"
     weightSolver : str, optional
         How to solve the weights. Either "demBones" for
         `jointPoses.solveSkinWeights`, or "smooth" for
         `jointWeights.solveSmoothWeights`. Defaults to "demBones"
-    weightKwargs : dict, optional
-        Passed to the weight solve
+    weightSmoothIterations : int, optional
+        How many times to smooth the final weights before building the residual
+        shapes, like flood smoothing them in Maya. Each vertex keeps the same max
+        number of influences as the weight solve. Use 0 to skip it. Defaults to 3.
+        See `jointWeights.smoothWeights`
     ignoreVerts : [int, ...], optional
         Vertices that the shapes don't apply to, like the inside of the mouth. They
         aren't used to fit the poses. The smooth weight solve fills in their weights
@@ -500,9 +582,11 @@ def jointifySimplexLayered(
         weights as they are
     pBar : QProgressDialog, optional
         An optional progress dialog
-    **solveKwargs
-        Passed to `solveSimplexPoses`. Use ``poseSolver="rigid"`` to solve with
-        jointPosesRigid.solveLayeredPoses instead of jointPoses.solveLayeredPoses
+    **settings
+        The settings of the solvers, like ``iterations`` for the pose solver, or
+        ``smoothness`` and ``maxInfluences`` for the smooth weight solver. Each one
+        goes to whichever of the chosen solvers takes it. A setting that neither
+        of them takes is an error
 
     Returns
     -------
@@ -528,17 +612,17 @@ def jointifySimplexLayered(
     elif callable(shapeJobs):
         shapeJobs = shapeJobs(simplex, shapes)
 
-    if weightSolver not in ("demBones", "smooth"):
-        raise ValueError(
-            f'Unknown weightSolver {weightSolver!r}. Use "demBones" or "smooth"'
-        )
+    # Check the settings before doing any of the work
+    poseSettings, weightSettings = _splitSettings(settings, poseSolver, weightSolver)
+    poseSettings["poseSolver"] = poseSolver
+
     solved = {j for job in jobs for p in job.passes for j in p.joints}
     weightJoints = sorted(solved | set(lockJoints))
     if weights is None:
         weights = nearestJointWeights(restPts, jointMats, weightJoints)
     if ignoreVerts is not None:
         ignoreVerts = sorted(set(int(i) for i in ignoreVerts))
-        solveKwargs["ignoreVerts"] = ignoreVerts
+        poseSettings["ignoreVerts"] = ignoreVerts
 
     if pBar is not None:
         pBar.setLabelText("Solving Joint Poses")
@@ -559,7 +643,7 @@ def jointifySimplexLayered(
             jobs,
             shapeJobs,
             lockJoints,
-            **solveKwargs,
+            **poseSettings,
         )
         rmse = _fitRmse(restPts, targets, weights, jointMats, poseMats, ignoreVerts)
         now = datetime.datetime.now().time()
@@ -576,11 +660,11 @@ def jointifySimplexLayered(
                 faces,
                 joints=weightJoints,
                 ignoreVerts=ignoreVerts,
-                **(weightKwargs or {}),
+                **weightSettings,
             )
         else:
             # Dem Bones can't leave vertices out of the fit, so keep their weights
-            kwargs = dict(weightKwargs or {})
+            kwargs = dict(weightSettings)
             if ignoreVerts:
                 lock = np.zeros(len(restPts))
                 lock[ignoreVerts] = 1.0
@@ -590,6 +674,19 @@ def jointifySimplexLayered(
             )
         now = datetime.datetime.now().time()
         print(f"{now}: Weight fit RMSE: {weightRmse}")
+
+    if weightSmoothIterations > 0:
+        maxInfluences = weightSettings.get(
+            "maxInfluences",
+            inspect.signature(_WEIGHT_SOLVERS[weightSolver])
+            .parameters["maxInfluences"]
+            .default,
+        )
+        print(f"Smoothing the weights {weightSmoothIterations} times")
+        weights = smoothWeights(weights, faces, weightSmoothIterations, maxInfluences)
+        rmse = _fitRmse(restPts, targets, weights, jointMats, poseMats, ignoreVerts)
+        now = datetime.datetime.now().time()
+        print(f"{now}: Joint fit RMSE with the smoothed weights: {rmse}")
 
     return _finishJointify(
         simplex,

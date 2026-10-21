@@ -398,6 +398,68 @@ def solveSmoothWeights(
     return weights, skinRmse(restVerts, targetVerts, weights, skin, ignoreVerts)
 
 
+def smoothWeights(
+    weights: np.ndarray,
+    faces: Sequence[Sequence[int]],
+    iterations: int = 3,
+    maxInfluences: int = 4,
+    strength: float = 0.5,
+) -> np.ndarray:
+    """Smooth skin weights across a mesh, like flood smoothing them in Maya
+
+    Every iteration moves each vertex's weights toward the average of its
+    neighbors' weights. That spreads each joint to more vertices, so afterwards
+    each vertex only keeps its strongest influences
+
+    Parameters
+    ----------
+    weights : np.ndarray
+        The (N, J) skin weights
+    faces : [[int, ...], ...]
+        The mesh faces
+    iterations : int, optional
+        How many times to smooth. Defaults to 3
+    maxInfluences : int, optional
+        The max number of joints per vertex. Defaults to 4
+    strength : float, optional
+        How far each iteration moves toward the neighbors' average, from 0 to 1.
+        Defaults to 0.5
+
+    Returns
+    -------
+    : np.ndarray
+        The (N, J) smoothed weights
+    """
+    weights = np.asarray(weights, dtype=np.float64)
+    if iterations <= 0:
+        return weights.copy()
+    numVerts = len(weights)
+    edges = meshEdges(faces)
+    adjacency = scipy.sparse.csr_array(
+        (
+            np.ones(2 * len(edges)),
+            (np.concatenate(edges.T[::-1]), np.concatenate(edges.T)),
+        ),
+        shape=(numVerts, numVerts),
+    )
+    degree = adjacency.sum(axis=1)
+    # Vertices without any neighbors just keep their weights
+    lonely = degree == 0
+    degree[lonely] = 1.0
+
+    for _ in range(iterations):
+        average = (adjacency @ weights) / degree[:, None]
+        average[lonely] = weights[lonely]
+        weights = (1.0 - strength) * weights + strength * average
+
+    # Only keep the strongest influences
+    if weights.shape[1] > maxInfluences:
+        weak = np.argpartition(-weights, maxInfluences, axis=1)[:, maxInfluences:]
+        np.put_along_axis(weights, weak, 0.0, axis=1)
+    weights /= weights.sum(axis=1, keepdims=True)
+    return weights
+
+
 def skinRmse(
     restVerts: np.ndarray,
     targetVerts: np.ndarray,
