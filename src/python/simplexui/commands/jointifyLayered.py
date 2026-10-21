@@ -112,6 +112,7 @@ def main():
     parser.add_argument("--joint-mats", required=True, help="A .npy of (J, 4, 4) rest world matrices")
     parser.add_argument("--weights", help="A .npy of (N, J) starting skin weights")
     parser.add_argument("--weight-rounds", type=int, help="How many times to re-solve the weights. 0 keeps --weights")
+    parser.add_argument("--weight-solver", choices=["demBones", "smooth"], help="How to solve the weights")
     parser.add_argument("--pose-solver", choices=["demBones", "rigid"], help="Which layered solve to use")
     parser.add_argument("--rot-reg-scale", type=float, help="Multiplies each pass's rotReg. 0 turns it off")
     parser.add_argument("--rot-radius", type=float, help="Rigid solver only. The min point distance for the rotation regularization")
@@ -130,6 +131,7 @@ def main():
         args.joint_mats,
         args.weights,
         weightRounds=args.weight_rounds,
+        weightSolver=args.weight_solver,
         minWeight=args.min_weight,
         iterations=args.iterations,
         chunkSize=args.chunk_size,

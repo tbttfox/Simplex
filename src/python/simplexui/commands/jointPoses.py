@@ -843,6 +843,7 @@ def solveLayeredPoses(
     rotRegScale: float = 0.2,
     minWeight: float = 0.3,
     chunkSize: int = 64,
+    ignoreVerts: Sequence[int] | None = None,
     progress: ProgressCallback | None = None,
 ) -> np.ndarray:
     """Solve joint poses in layers with Dem Bones, keeping the skin weights fixed
@@ -890,6 +891,8 @@ def solveLayeredPoses(
         don't get solved, so they just follow their parents. Defaults to 0.3
     chunkSize : int, optional
         How many targets to give Dem Bones at once. Defaults to 64
+    ignoreVerts : [int, ...], optional
+        Vertices that the targets don't apply to. They aren't used to fit the poses
     progress : callable, optional
         Called as ``progress(value, maximum, message)``
 
@@ -914,6 +917,11 @@ def solveLayeredPoses(
     invRest = invAffine(jointMats)
     order = _jointOrder(parents)
     locked = set(lockJoints or [])
+
+    # The passes only fit the vertices with weights, so drop the ignored ones
+    if ignoreVerts is not None and len(ignoreVerts):
+        weights = weights.copy()
+        weights[np.asarray(ignoreVerts, dtype=int)] = 0.0
 
     # Don't let the passes touch locked joints
     solveJobs = []
