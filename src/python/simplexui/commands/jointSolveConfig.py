@@ -50,10 +50,16 @@ The file looks like this::
   `jointPoses.SolvePass`)
 * ``defaultJobs`` are the jobs every shape runs, in order
 * ``shapeJobs`` replaces the default jobs for specific simplex shapes, by name
+* ``ignoreVerts`` is an optional list of vertex indices that the shapes don't
+  apply to, like the inside of the mouth. They aren't used to fit the poses or
+  the weights. See `simplexJoints.jointifySimplexLayered`
 * ``settings`` are passed to `jointPoses.solveLayeredPoses`
   (and ``weightRounds`` to `simplexJoints.jointifySimplexLayered`).
   ``"poseSolver": "rigid"`` uses `jointPosesRigid.solveLayeredPoses` instead, which
-  also takes ``rotRadius`` and ``priorReg``, and respects the ``r``/``t`` flags
+  also takes ``rotRadius`` and ``priorReg``, and respects the ``r``/``t`` flags.
+  ``"weightSolver": "smooth"`` solves the weights with
+  `jointWeights.solveSmoothWeights` instead of Dem Bones, and ``weightKwargs``
+  are passed to whichever one is used
 
 Joints that aren't in the skeleton being solved are skipped, so the same file
 works with a reduced skeleton
@@ -97,6 +103,8 @@ def solveKwargsFromConfig(rawconfig: dict | str) -> dict:
     kwargs['jointNames'] = jointNames
     kwargs['parents'] = parIdxs
     kwargs['lockJoints'] = lockIdxs
+    if "ignoreVerts" in config:
+        kwargs["ignoreVerts"] = [int(i) for i in config["ignoreVerts"]]
 
     jobs, jobIndexByName = [], {}
     missing = set()

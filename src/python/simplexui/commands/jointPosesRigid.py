@@ -644,6 +644,7 @@ def solveLayeredPoses(
     minWeight: float = 0.3,
     chunkSize: int = 64,
     processes: int | None = None,
+    ignoreVerts: Sequence[int] | None = None,
     progress: ProgressCallback | None = None,
 ) -> np.ndarray:
     """Solve joint poses in layers with fixed skin weights
@@ -702,6 +703,8 @@ def solveLayeredPoses(
         are made smaller if needed so every process gets one, as long as they
         have at least `_MIN_CHUNK` targets. Use 1 to solve in this process.
         Defaults to 16, or the number of CPUs if that's lower
+    ignoreVerts : [int, ...], optional
+        Vertices that the targets don't apply to. They aren't used to fit the poses
     progress : callable, optional
         Called as ``progress(value, maximum, message)``. This is only ever called
         from this process's calling thread
@@ -761,8 +764,15 @@ def solveLayeredPoses(
     ]
 
     # Everything about the passes that doesn't depend on the shapes is shared by
-    # every chunk, so build it once up front
-    jointVerts = _jointVerts(restVerts, weights)
+    # every chunk, so build it once up front. The ignored vertices still get
+    # skinned, but they aren't part of the joints' fits
+    allVerts = _jointVerts(restVerts, weights)
+    if ignoreVerts is not None and len(ignoreVerts):
+        dataWeights = weights.copy()
+        dataWeights[np.asarray(ignoreVerts, dtype=int)] = 0.0
+        jointVerts = _jointVerts(restVerts, dataWeights)
+    else:
+        jointVerts = allVerts
     setups = [
         [
             _passSetup(p, parents, order, jointVerts, len(restVerts), minWeight)
@@ -776,7 +786,7 @@ def solveLayeredPoses(
         invRest=invRest,
         parents=parents,
         jointVerts=jointVerts,
-        skinMat=_skinMatrix(jointVerts, len(restVerts)),
+        skinMat=_skinMatrix(allVerts, len(restVerts)),
         solveJobs=solveJobs,
         setups=setups,
         iterations=iterations,

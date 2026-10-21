@@ -50,7 +50,6 @@ from .jointPoses import (
     paramsToDeltas,
     poseDeltaParams,
     skinMatrices,
-    skinVerts,
     solveJointPoses,
     solveLayeredPoses,
     solveSkinWeights,
@@ -58,6 +57,7 @@ from .jointPoses import (
     unwrapAxisAngle,
     worldMats,
 )
+from .jointWeights import skinRmse, solveSmoothWeights
 
 
 @dataclass
@@ -421,13 +421,11 @@ def _fitRmse(
     weights: np.ndarray,
     jointMats: np.ndarray,
     poseMats: np.ndarray,
+    ignoreVerts: list[int] | None = None,
 ) -> float:
     """Get the root mean squared error of the skinned poses against the targets"""
-    total = 0.0
-    for tgt, pose in zip(targets, poseMats):
-        fit = skinVerts(restPts, weights, skinMatrices(jointMats, pose[None]))[0]
-        total += ((fit - tgt) ** 2).sum()
-    return float(np.sqrt(total / (len(targets) * len(restPts))))
+    skin = skinMatrices(jointMats, poseMats)
+    return skinRmse(restPts, targets, weights, skin, ignoreVerts)
 
 
 def jointifySimplexLayered(
@@ -444,7 +442,9 @@ def jointifySimplexLayered(
     lockJoints: list[int] | None = None,
     weights: np.ndarray | None = None,
     weightRounds: int = 2,
+    weightSolver: str = "demBones",
     weightKwargs: dict | None = None,
+    ignoreVerts: list[int] | None = None,
     pBar=None,
     **solveKwargs,
 ):
@@ -452,8 +452,8 @@ def jointifySimplexLayered(
     using a layered solve with fixed skin weights. See `jointPoses.solveLayeredPoses`
 
     The weights and poses are solved in alternating rounds. First the poses are
-    solved with the current weights, then Dem Bones solves new weights for those
-    poses, and repeat. The final round is always a pose solve.
+    solved with the current weights, then new weights are solved for those poses,
+    and repeat. The final round is always a pose solve.
 
     Parameters
     ----------
@@ -487,8 +487,17 @@ def jointifySimplexLayered(
     weightRounds : int, optional
         The number of times to solve for new weights. Use 0 to keep the given
         weights. Defaults to 2
+    weightSolver : str, optional
+        How to solve the weights. Either "demBones" for
+        `jointPoses.solveSkinWeights`, or "smooth" for
+        `jointWeights.solveSmoothWeights`. Defaults to "demBones"
     weightKwargs : dict, optional
-        Passed to jointPoses.solveSkinWeights
+        Passed to the weight solve
+    ignoreVerts : [int, ...], optional
+        Vertices that the shapes don't apply to, like the inside of the mouth. They
+        aren't used to fit the poses. The smooth weight solve fills in their weights
+        from the vertices around them, and the Dem Bones weight solve keeps their
+        weights as they are
     pBar : QProgressDialog, optional
         An optional progress dialog
     **solveKwargs
@@ -519,11 +528,17 @@ def jointifySimplexLayered(
     elif callable(shapeJobs):
         shapeJobs = shapeJobs(simplex, shapes)
 
-    if weights is None:
-        solved = {j for job in jobs for p in job.passes for j in p.joints}
-        weights = nearestJointWeights(
-            restPts, jointMats, sorted(solved | set(lockJoints))
+    if weightSolver not in ("demBones", "smooth"):
+        raise ValueError(
+            f'Unknown weightSolver {weightSolver!r}. Use "demBones" or "smooth"'
         )
+    solved = {j for job in jobs for p in job.passes for j in p.joints}
+    weightJoints = sorted(solved | set(lockJoints))
+    if weights is None:
+        weights = nearestJointWeights(restPts, jointMats, weightJoints)
+    if ignoreVerts is not None:
+        ignoreVerts = sorted(set(int(i) for i in ignoreVerts))
+        solveKwargs["ignoreVerts"] = ignoreVerts
 
     if pBar is not None:
         pBar.setLabelText("Solving Joint Poses")
@@ -546,21 +561,33 @@ def jointifySimplexLayered(
             lockJoints,
             **solveKwargs,
         )
-        rmse = _fitRmse(restPts, targets, weights, jointMats, poseMats)
+        rmse = _fitRmse(restPts, targets, weights, jointMats, poseMats, ignoreVerts)
         now = datetime.datetime.now().time()
         print(f"{now}: Joint fit RMSE: {rmse}")
         if weightRound == weightRounds:
             break
         print("Solving Skin Weights")
-        weights, weightRmse = solveSkinWeights(
-            restPts,
-            targets,
-            jointMats,
-            poseMats,
-            faces,
-            weights,
-            **(weightKwargs or {}),
-        )
+        if weightSolver == "smooth":
+            weights, weightRmse = solveSmoothWeights(
+                restPts,
+                targets,
+                jointMats,
+                poseMats,
+                faces,
+                joints=weightJoints,
+                ignoreVerts=ignoreVerts,
+                **(weightKwargs or {}),
+            )
+        else:
+            # Dem Bones can't leave vertices out of the fit, so keep their weights
+            kwargs = dict(weightKwargs or {})
+            if ignoreVerts:
+                lock = np.zeros(len(restPts))
+                lock[ignoreVerts] = 1.0
+                kwargs["lockWeights"] = lock
+            weights, weightRmse = solveSkinWeights(
+                restPts, targets, jointMats, poseMats, faces, weights, **kwargs
+            )
         now = datetime.datetime.now().time()
         print(f"{now}: Weight fit RMSE: {weightRmse}")
 
