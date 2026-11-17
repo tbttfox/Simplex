@@ -55,8 +55,8 @@ The file looks like this::
   the weights. See `simplexJoints.jointifySimplexLayered`
 * ``settings`` are passed to `simplexJoints.jointifySimplexLayered`. That's
   ``weightRounds``, ``poseSolver``, ``weightSolver``, ``weightSmoothIterations``,
-  and the settings of whichever pose and weight solvers they pick, all side by
-  side. For example::
+  ``weightSmoothLimit``, and the settings of whichever pose and weight solvers
+  they pick, all side by side. For example::
 
       "settings": {
           "poseSolver": "rigid", "iterations": 6, "minWeight": 0.3,

@@ -117,6 +117,7 @@ def main():
     parser.add_argument("--weight-rounds", type=int, help="How many times to re-solve the weights. 0 keeps --weights")
     parser.add_argument("--weight-solver", choices=["demBones", "smooth"], help="How to solve the weights")
     parser.add_argument("--weight-smooth-iterations", type=int, help="How many times to smooth the final weights before building the residuals. Defaults to 3")
+    parser.add_argument("--weight-smooth-limit", action="store_true", default=None, help="Keep the --max-influences limit when smoothing the final weights")
     parser.add_argument("--smoothness", type=float, help="Smooth weight solver only. How strongly the weights are smoothed")
     parser.add_argument("--max-influences", type=int, help="The max number of joints per vertex")
     parser.add_argument("--candidates", type=int, help="Smooth weight solver only. How many of each vertex's closest joints it can pick from")
@@ -140,6 +141,7 @@ def main():
         weightRounds=args.weight_rounds,
         weightSolver=args.weight_solver,
         weightSmoothIterations=args.weight_smooth_iterations,
+        weightSmoothLimit=args.weight_smooth_limit,
         smoothness=args.smoothness,
         maxInfluences=args.max_influences,
         candidates=args.candidates,

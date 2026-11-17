@@ -34,7 +34,7 @@ import datetime
 import inspect
 import itertools
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 from pysimplex import PySimplex
@@ -300,7 +300,23 @@ def _finishJointify(
         rmse=rmse,
         shapeNames=[s.name for s in simplex.shapes],
     )
+    newShapePts = _residualShapes(
+        simplex, deltaShapes, restPts, shapes, targets, vecByShape, jointData, pBar
+    )
+    return newShapePts, jointData
 
+
+def _residualShapes(
+    simplex: Simplex,
+    deltaShapes: np.ndarray,
+    restPts: np.ndarray,
+    shapes: list,
+    targets: np.ndarray,
+    vecByShape: dict,
+    jointData: SimplexJointData,
+    pBar=None,
+) -> np.ndarray:
+    """Un-skin the targets with the joint data, and collapse them into residual shapes"""
     # Un-skin using the poses the rig will actually produce. At the exact shape
     # activations these match the solved poses, but this guarantees the residuals
     # are computed against the same thing the blendPose node outputs
@@ -308,13 +324,78 @@ def _finishJointify(
     if pBar is not None:
         pBar.setLabelText("Un-skinning Shapes")
     print("Un-skinning Shapes")
-    preSkin = unskinVerts(targets, weights, skinMatrices(jointMats, rigPoses))
+    skin = skinMatrices(jointData.jointMats, rigPoses)
+    preSkin = unskinVerts(targets, jointData.weights, skin)
 
     newPtsByShape = {s: p - restPts for s, p in zip(shapes, preSkin)}
     newShapePts = collapseFullShapes(
         simplex, deltaShapes, newPtsByShape, vecByShape, pBar
     )
-    return newShapePts + restPts[None, ...], jointData
+    return newShapePts + restPts[None, ...]
+
+
+def rebuildResiduals(
+    inPath: str,
+    outPath: str,
+    jointData: SimplexJointData,
+    jointDataPath: str | None = None,
+    pBar=None,
+) -> SimplexJointData:
+    """Rebuild the residual shapes for joint data whose weights have been edited
+
+    The joint poses are kept as they are, only the residuals change
+
+    Parameters
+    ----------
+    inPath : str
+        The original .smpx file with the full sculpted shapes, NOT the residuals
+    outPath : str
+        The output .smpx file containing the new residual shapes
+    jointData : SimplexJointData
+        The joint data with the edited weights
+    jointDataPath : str, optional
+        Where to write the joint data. Defaults to the outPath with a .npz extension
+    pBar : QProgressDialog, optional
+        An optional progress dialog
+
+    Returns
+    -------
+    : SimplexJointData
+        A copy of the joint data with the joints-only fit error updated
+    """
+    if not os.path.isfile(str(inPath)):
+        raise OSError("File does not exist: " + str(inPath))
+
+    jsString, _, verts, _, _, _ = readSmpx(inPath)
+    simplex = Simplex.buildSystemFromJsonString(jsString, None, forceDummy=True)
+    solver = PySimplex(jsString)
+    if [s.name for s in simplex.shapes] != jointData.shapeNames:
+        raise ValueError(f"The shapes in {inPath} don't match the joint data")
+    if jointData.weights.shape != (verts.shape[1], len(jointData.jointNames)):
+        raise ValueError(
+            f"Expected ({verts.shape[1]}, {len(jointData.jointNames)}) weights, "
+            f"got {jointData.weights.shape}"
+        )
+
+    restPts = verts[simplex.shapes.index(simplex.restShape)]
+    deltaShapes = verts - restPts[None, ...]
+    shapes = jointShapes(simplex)
+    ptsByShape, vecByShape = buildFullShapes(simplex, shapes, deltaShapes, solver, pBar)
+    targets = np.array([restPts + ptsByShape[s] for s in shapes])
+
+    rigPoses = jointData.evaluate(np.array([vecByShape[s] for s in shapes]))
+    rmse = _fitRmse(restPts, targets, jointData.weights, jointData.jointMats, rigPoses)
+    print(f"Joint fit RMSE: {rmse}")
+    jointData = replace(jointData, rmse=rmse)
+
+    newShapePts = _residualShapes(
+        simplex, deltaShapes, restPts, shapes, targets, vecByShape, jointData, pBar
+    )
+    writeSimplex(inPath, outPath, newShapePts, name=simplex.name, pBar=pBar)
+    if jointDataPath is None:
+        jointDataPath = os.path.splitext(outPath)[0] + ".npz"
+    jointData.save(jointDataPath)
+    return jointData
 
 
 def _shapeDepths(simplex: Simplex) -> dict:
@@ -519,6 +600,7 @@ def jointifySimplexLayered(
     poseSolver: str = "demBones",
     weightSolver: str = "demBones",
     weightSmoothIterations: int = 3,
+    weightSmoothLimit: bool = False,
     ignoreVerts: list[int] | None = None,
     pBar=None,
     **settings,
@@ -572,9 +654,12 @@ def jointifySimplexLayered(
         `jointWeights.solveSmoothWeights`. Defaults to "demBones"
     weightSmoothIterations : int, optional
         How many times to smooth the final weights before building the residual
-        shapes, like flood smoothing them in Maya. Each vertex keeps the same max
-        number of influences as the weight solve. Use 0 to skip it. Defaults to 3.
+        shapes, like flood smoothing them in Maya. Use 0 to skip it. Defaults to 3.
         See `jointWeights.smoothWeights`
+    weightSmoothLimit : bool, optional
+        Whether the smoothed weights keep the same max number of influences per
+        vertex as the weight solve. Smoothing spreads the joints out, so without the
+        limit vertices can end up with more influences. Defaults to False
     ignoreVerts : [int, ...], optional
         Vertices that the shapes don't apply to, like the inside of the mouth. They
         aren't used to fit the poses. The smooth weight solve fills in their weights
@@ -621,7 +706,7 @@ def jointifySimplexLayered(
     if weights is None:
         weights = nearestJointWeights(restPts, jointMats, weightJoints)
     if ignoreVerts is not None:
-        ignoreVerts = sorted(set(int(i) for i in ignoreVerts))
+        ignoreVerts = sorted({int(i) for i in ignoreVerts})
         poseSettings["ignoreVerts"] = ignoreVerts
 
     if pBar is not None:
@@ -676,12 +761,14 @@ def jointifySimplexLayered(
         print(f"{now}: Weight fit RMSE: {weightRmse}")
 
     if weightSmoothIterations > 0:
-        maxInfluences = weightSettings.get(
-            "maxInfluences",
-            inspect.signature(_WEIGHT_SOLVERS[weightSolver])
-            .parameters["maxInfluences"]
-            .default,
-        )
+        maxInfluences = None
+        if weightSmoothLimit:
+            maxInfluences = weightSettings.get(
+                "maxInfluences",
+                inspect.signature(_WEIGHT_SOLVERS[weightSolver])
+                .parameters["maxInfluences"]
+                .default,
+            )
         print(f"Smoothing the weights {weightSmoothIterations} times")
         weights = smoothWeights(weights, faces, weightSmoothIterations, maxInfluences)
         rmse = _fitRmse(restPts, targets, weights, jointMats, poseMats, ignoreVerts)

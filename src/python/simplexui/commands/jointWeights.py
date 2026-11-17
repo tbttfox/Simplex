@@ -139,13 +139,15 @@ def _dataTerms(
     return gram, rhs
 
 
-def _smoothnessMatrix(edges: np.ndarray, cands: np.ndarray) -> scipy.sparse.csr_array:
+def _smoothnessMatrix(
+    edges: np.ndarray, cands: np.ndarray, edgeWeights: np.ndarray
+) -> scipy.sparse.csr_array:
     """Build the matrix of the smoothness energy over every (vertex, candidate) slot
 
     The energy is the sum over the edges and joints of the squared difference of
-    the joint's weights at the two ends of the edge. A joint that isn't one of the
-    candidates of a vertex has a weight of 0 there, so the weights fall off to 0
-    where a joint stops being a candidate
+    the joint's weights at the two ends of the edge, times the edge's weight. A
+    joint that isn't one of the candidates of a vertex has a weight of 0 there, so
+    the weights fall off to 0 where a joint stops being a candidate
     """
     numVerts, numCands = cands.shape
     src = np.concatenate((edges[:, 0], edges[:, 1]))
@@ -155,6 +157,7 @@ def _smoothnessMatrix(edges: np.ndarray, cands: np.ndarray) -> scipy.sparse.csr_
     srcSlot = (src[:, None] * numCands + np.arange(numCands)).ravel()
     joint = cands[src].ravel()
     dstVert = np.repeat(dst, numCands)
+    slotWeights = np.repeat(np.concatenate((edgeWeights, edgeWeights)), numCands)
 
     # Find the slot with the same joint at the other end of the edge
     match = cands[dstVert] == joint[:, None]
@@ -163,7 +166,7 @@ def _smoothnessMatrix(edges: np.ndarray, cands: np.ndarray) -> scipy.sparse.csr_
 
     rows = np.concatenate((srcSlot, srcSlot[found]))
     cols = np.concatenate((srcSlot, dstSlot[found]))
-    vals = np.concatenate((np.ones(len(srcSlot)), -np.ones(found.sum())))
+    vals = np.concatenate((slotWeights, -slotWeights[found]))
     size = numVerts * numCands
     return scipy.sparse.csr_array((vals, (rows, cols)), shape=(size, size))
 
@@ -271,6 +274,14 @@ def _solveActive(
     return (even + basis @ sol).reshape(numVerts, numCands)
 
 
+def _extraInfluences(
+    w: np.ndarray, active: np.ndarray, maxInfluences: int
+) -> np.ndarray:
+    """Get the (N, K) active slots past each vertex's strongest maxInfluences"""
+    ranks = np.argsort(np.argsort(-np.where(active, w, -np.inf), axis=1), axis=1)
+    return active & (ranks >= maxInfluences)
+
+
 def solveSmoothWeights(
     restVerts: np.ndarray,
     targetVerts: np.ndarray,
@@ -342,8 +353,8 @@ def solveSmoothWeights(
 
     # Scale the smoothness by the size of the data term, so it doesn't depend on
     # the units or the number of targets
-    diag = np.trace(gram, axis1=-2, axis2=-1)[keep] / numCands
-    scale = float(diag.mean()) if len(diag) and diag.mean() > 0 else 1.0
+    local = np.trace(gram, axis1=-2, axis2=-1) / numCands
+    scale = float(local[keep].mean()) if keep.any() and local[keep].mean() > 0 else 1.0
 
     size = numVerts * numCands
     blocks = np.arange(size).reshape(numVerts, numCands)
@@ -358,21 +369,20 @@ def solveSmoothWeights(
         shape=(size, size),
     )
     edges = meshEdges(faces)
-    smooth = _smoothnessMatrix(edges, cands)
+    edgeWeights = np.full(len(edges), smoothness * scale)
+    smooth = _smoothnessMatrix(edges, cands, edgeWeights)
     # A tiny pull toward 0 keeps the system solvable for ignored vertices that
     # aren't connected to anything
     tiny = scale * 1.0e-9
-    quad = (
-        data + (smoothness * scale) * smooth + scipy.sparse.eye_array(size) * tiny
-    ).tocsr()
+    quad = (data + smooth + scipy.sparse.eye_array(size) * tiny).tocsr()
     rhs = rhs.ravel()
 
-    # Each vertex's block of quad. The smoothness only adds the vertex's number of
-    # edges to the diagonal
-    degree = np.bincount(edges.ravel(), minlength=numVerts)
-    blockDiag = gram + (smoothness * scale * degree + tiny)[:, None, None] * np.eye(
-        numCands
+    # Each vertex's block of quad. The smoothness only adds the total weight of the
+    # vertex's edges to the diagonal
+    edgeTotals = np.bincount(
+        edges.ravel(), weights=np.repeat(edgeWeights, 2), minlength=numVerts
     )
+    blockDiag = gram + (edgeTotals + tiny)[:, None, None] * np.eye(numCands)
 
     # Remove negative weights, then any extra influences, and re-solve until
     # there aren't any of either
@@ -384,13 +394,14 @@ def solveSmoothWeights(
         if neg.any():
             active &= ~neg
             continue
-        over = active.sum(axis=1) > maxInfluences
-        if not over.any():
+        extra = _extraInfluences(w, active, maxInfluences)
+        if not extra.any():
             break
-        ranks = np.argsort(np.argsort(-np.where(active, w, -np.inf), axis=1), axis=1)
-        active &= ~(over[:, None] & (ranks >= maxInfluences))
+        active &= ~extra
 
+    # Make sure of the limits, even if the solves ran out
     w = np.where(active, np.maximum(w, 0.0), 0.0)
+    w[_extraInfluences(w, w > 0.0, maxInfluences)] = 0.0
     w /= w.sum(axis=1, keepdims=True)
     weights = np.zeros((numVerts, numJoints))
     np.add.at(weights, (np.arange(numVerts)[:, None], cands), w)
@@ -402,14 +413,14 @@ def smoothWeights(
     weights: np.ndarray,
     faces: Sequence[Sequence[int]],
     iterations: int = 3,
-    maxInfluences: int = 4,
+    maxInfluences: int | None = None,
     strength: float = 0.5,
 ) -> np.ndarray:
     """Smooth skin weights across a mesh, like flood smoothing them in Maya
 
     Every iteration moves each vertex's weights toward the average of its
-    neighbors' weights. That spreads each joint to more vertices, so afterwards
-    each vertex only keeps its strongest influences
+    neighbors' weights. That spreads each joint to more vertices, so it can
+    optionally only keep each vertex's strongest influences afterwards
 
     Parameters
     ----------
@@ -420,7 +431,7 @@ def smoothWeights(
     iterations : int, optional
         How many times to smooth. Defaults to 3
     maxInfluences : int, optional
-        The max number of joints per vertex. Defaults to 4
+        The max number of joints per vertex. Defaults to no limit
     strength : float, optional
         How far each iteration moves toward the neighbors' average, from 0 to 1.
         Defaults to 0.5
@@ -453,7 +464,7 @@ def smoothWeights(
         weights = (1.0 - strength) * weights + strength * average
 
     # Only keep the strongest influences
-    if weights.shape[1] > maxInfluences:
+    if maxInfluences is not None and weights.shape[1] > maxInfluences:
         weak = np.argpartition(-weights, maxInfluences, axis=1)[:, maxInfluences:]
         np.put_along_axis(weights, weak, 0.0, axis=1)
     weights /= weights.sum(axis=1, keepdims=True)
