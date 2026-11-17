@@ -252,6 +252,58 @@ def bindSkin(
     return skin
 
 
+def getSkinWeights(mesh: str, joints: list[str]) -> np.ndarray:
+    """Read the skin weights of a mesh back out of its skinCluster
+
+    Parameters
+    ----------
+    mesh : str
+        The skinned mesh
+    joints : [str, ...]
+        The joints to get weights for, in the order of the returned columns.
+        Any other influences must have no weight
+
+    Returns
+    -------
+    : np.ndarray
+        The (N, J) normalized skin weights
+    """
+    skins = cmds.ls(cmds.listHistory(mesh), type="skinCluster")
+    if len(skins) != 1:
+        raise ValueError(f"Expected one skinCluster on {mesh}, found {skins}")
+
+    sel = om2.MSelectionList()
+    sel.add(skins[0])
+    sel.add(mesh)
+    skinFn = oma2.MFnSkinCluster(sel.getDependNode(0))
+    meshPath = sel.getDagPath(1).extendToShape()
+
+    compFn = om2.MFnSingleIndexedComponent()
+    comp = compFn.create(om2.MFn.kMeshVertComponent)
+    compFn.setCompleteData(om2.MFnMesh(meshPath).numVertices)
+    flatWeights, numInfs = skinFn.getWeights(meshPath, comp)
+    skinWeights = np.array(flatWeights).reshape((-1, numInfs))
+
+    # Match up the skinCluster's influence order with our joint order
+    jointIdx = {n: i for i, n in enumerate(cmds.ls(joints, long=True))}
+    if len(jointIdx) != len(joints):
+        raise ValueError("Some of the joints are missing or not unique")
+    weights = np.zeros((len(skinWeights), len(joints)))
+    for i, path in enumerate(skinFn.influenceObjects()):
+        idx = jointIdx.get(path.fullPathName())
+        if idx is not None:
+            weights[:, idx] = skinWeights[:, i]
+        elif skinWeights[:, i].any():
+            raise ValueError(
+                f"{path.partialPathName()} has weights, but isn't in the joint list"
+            )
+
+    totals = weights.sum(axis=1, keepdims=True)
+    if (totals <= 0.0).any():
+        raise ValueError(f"{mesh} has vertices with no weights")
+    return weights / totals
+
+
 def buildJoints(jointData: SimplexJointData) -> list[str]:
     """Build the joint hierarchy stored in the joint data, in its rest pose
 
